@@ -1,0 +1,69 @@
+name: SOL Signal Analyzer
+
+on:
+  # ─── Cron : toutes les 4h (UTC) ───────────────────────
+  # Modifie selon tes sessions cibles :
+  #   Sessions US actives : 13h-21h UTC  → runs à 13h, 17h, 21h
+  #   Sessions Londres    : 07h-11h UTC  → run à 07h
+  # Format cron : minute heure jour mois jour_semaine
+  schedule:
+    - cron: "0 7,13,17,21 * * *"   # 07h, 13h, 17h, 21h UTC chaque jour
+
+  # ─── Lancement manuel depuis l'UI GitHub ──────────────
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Forcer l'envoi Telegram même si signal inchangé"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # 1. Récupère le code du repo
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Python 3.11
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 3. Dépendances
+      - name: Install dependencies
+        run: pip install requests pandas numpy colorama
+
+      # 4. Restaure le state file depuis le cache GitHub
+      #    (pour que le bot sache si le signal a changé depuis le dernier run)
+      - name: Restore signal state cache
+        uses: actions/cache@v4
+        with:
+          path: .sol_signal_state.json
+          key: sol-signal-state-${{ github.ref_name }}
+          restore-keys: sol-signal-state-
+
+      # 5. Lance l'analyse
+      - name: Run analyzer
+        env:
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python sol_analyzer.py --notify --force
+          else
+            python sol_analyzer.py --notify
+          fi
+
+      # 6. Sauvegarde le state mis à jour dans le cache
+      - name: Save signal state cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: .sol_signal_state.json
+          key: sol-signal-state-${{ github.ref_name }}-${{ github.run_id }}
