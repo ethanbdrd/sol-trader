@@ -47,7 +47,7 @@ init(autoreset=True, strip=not IS_TTY, convert=False)
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-BYBIT_BASE  = "https://api.bybit.com"
+GATE_BASE   = "https://api.gateio.ws/api/v4"
 
 SYMBOL      = "SOLUSDT"
 BTC_SYMBOL  = "BTCUSDT"
@@ -133,126 +133,130 @@ def get(url, params=None):
         return None
 
 
+def _gate_contract(symbol):
+    """Convert SOLUSDT -> SOL_USDT for Gate.io futures."""
+    # e.g. SOLUSDT -> SOL_USDT, BTCUSDT -> BTC_USDT
+    if symbol.endswith("USDT"):
+        return symbol[:-4] + "_USDT"
+    return symbol
+
+
 def fetch_ohlcv(symbol, interval, limit=500):
     """
-    Returns OHLCV DataFrame. Bybit intervals: 1,3,5,15,30,60,120,240,D,W,M
-    We map common names: 15m->15, 4h->240, 1d->D
+    Gate.io futures candlesticks.
+    Intervals: 10s,1m,5m,15m,30m,1h,4h,8h,1d,7d
     """
-    interval_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+    interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
     iv = interval_map.get(interval, interval)
-    data = get(f"{BYBIT_BASE}/v5/market/kline",
-               {"category": "linear", "symbol": symbol,
-                "interval": iv, "limit": limit})
-    if not data or data.get("retCode") != 0:
-        print(R + f"  [API ERROR] kline {symbol} {interval}: {data}" + RST)
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/candlesticks",
+               {"contract": contract, "interval": iv, "limit": limit})
+    if not data:
         return None
-    # Bybit returns list of [startTime, open, high, low, close, volume, turnover]
-    rows = data["result"]["list"]
-    if not rows:
-        return None
-    df = pd.DataFrame(rows, columns=[
-        "open_time", "open", "high", "low", "close", "volume", "turnover"
-    ])
-    for col in ["open", "high", "low", "close", "volume", "turnover"]:
+    # Gate.io returns list of dicts:
+    # {t: timestamp_sec, o, h, l, c, v (contracts), sum (quote volume)}
+    df = pd.DataFrame(data)
+    df = df.rename(columns={"t": "open_time", "o": "open", "h": "high",
+                             "l": "low", "c": "close", "v": "volume",
+                             "sum": "quote_vol"})
+    for col in ["open", "high", "low", "close", "volume", "quote_vol"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["open_time"] = pd.to_datetime(pd.to_numeric(df["open_time"]), unit="ms", utc=True)
-    # Bybit returns newest first — reverse to chronological
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="s", utc=True)
     df = df.sort_values("open_time").set_index("open_time")
-    # Bybit doesn't give taker_buy directly — approximate from turnover
-    df["quote_vol"]       = df["turnover"]
-    df["taker_buy_quote"] = df["turnover"] * 0.5   # neutral fallback; CVD 4H will use trades endpoint
+    df["taker_buy_quote"] = df["quote_vol"] * 0.5  # neutral fallback for CVD proxy
     return df
 
 
 def fetch_trades_cvd(symbol, limit=1000):
     """
-    Fetch recent public trades for CVD. Bybit /v5/market/recent-trade
-    Returns (cvd, direction, buy_vol, sell_vol)
+    Gate.io recent trades for CVD.
+    GET /futures/usdt/trades?contract=SOL_USDT&limit=1000
+    Each trade: {size (+ = buy, - = sell), price, ...}
     """
-    data = get(f"{BYBIT_BASE}/v5/market/recent-trade",
-               {"category": "linear", "symbol": symbol, "limit": min(limit, 1000)})
-    if not data or data.get("retCode") != 0:
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/trades",
+               {"contract": contract, "limit": min(limit, 1000)})
+    if not data:
         return None
-    trades = data["result"]["list"]
-    buy_vol  = sum(float(t["size"]) for t in trades if t["side"] == "Buy")
-    sell_vol = sum(float(t["size"]) for t in trades if t["side"] == "Sell")
+    buy_vol  = sum(float(t["size"]) for t in data if float(t["size"]) > 0)
+    sell_vol = sum(abs(float(t["size"])) for t in data if float(t["size"]) < 0)
     cvd = buy_vol - sell_vol
     direction = "bullish" if cvd > 0 else "bearish"
     return cvd, direction, buy_vol, sell_vol
 
 
 def fetch_funding_rate(symbol):
-    """Returns list of recent funding rate records from Bybit."""
-    data = get(f"{BYBIT_BASE}/v5/market/funding/history",
-               {"category": "linear", "symbol": symbol, "limit": 10})
-    if not data or data.get("retCode") != 0:
+    """
+    Gate.io funding rate history.
+    GET /futures/usdt/funding_rate?contract=SOL_USDT&limit=10
+    """
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/funding_rate",
+               {"contract": contract, "limit": 10})
+    if not data:
         return None
-    records = data["result"]["list"]
-    # Normalize to same interface: [{fundingRate, fundingRateTimestamp}]
-    return [{"fundingRate": r["fundingRate"],
-             "fundingTime": r["fundingRateTimestamp"]} for r in records]
+    # Normalize: [{fundingRate, fundingTime}]
+    return [{"fundingRate": str(r["r"]), "fundingTime": r["t"]} for r in data]
 
 
 def fetch_open_interest_history(symbol, period="1h", limit=48):
     """
-    Returns OI history DataFrame.
-    Bybit intervalTime: 5min,15min,30min,1h,4h,1d
+    Gate.io open interest. /futures/usdt/contract_stats
+    interval: 5m, 15m, 30m, 1h, 4h, 1d
+    Returns OI in number of contracts — multiply by price for USD value.
     """
-    period_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15min"}
-    iv = period_map.get(period, period)
-    data = get(f"{BYBIT_BASE}/v5/market/open-interest",
-               {"category": "linear", "symbol": symbol,
-                "intervalTime": iv, "limit": limit})
-    if not data or data.get("retCode") != 0:
+    interval_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15m"}
+    iv = interval_map.get(period, period)
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/contract_stats",
+               {"contract": contract, "interval": iv, "limit": limit})
+    if not data:
         return None
-    rows = data["result"]["list"]
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["sumOpenInterest"]     = pd.to_numeric(df["openInterest"], errors="coerce")
-    # Bybit doesn't give notional directly — approximate with price
-    price = fetch_current_price(symbol) or 1
-    df["sumOpenInterestValue"] = df["sumOpenInterest"] * price
-    df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms", utc=True)
+    df = pd.DataFrame(data)
+    # Gate returns: {time, lsr_taker, lsr_account, long_liq_size, short_liq_size,
+    #                open_interest, open_interest_usd, ...}
+    df["sumOpenInterest"]      = pd.to_numeric(df.get("open_interest", 0), errors="coerce")
+    df["sumOpenInterestValue"] = pd.to_numeric(df.get("open_interest_usd", 0), errors="coerce")
+    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
     df = df.sort_values("timestamp")
     return df
 
 
 def fetch_long_short_ratio(symbol, period="1h", limit=24):
     """
-    Long/short ratio from Bybit. /v5/market/account-ratio
+    Gate.io long/short account ratio from contract_stats.
+    lsr_account = long accounts / short accounts ratio (> 1 = more longs)
     """
-    period_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15min"}
-    iv = period_map.get(period, period)
-    data = get(f"{BYBIT_BASE}/v5/market/account-ratio",
-               {"category": "linear", "symbol": symbol,
-                "period": iv, "limit": limit})
-    if not data or data.get("retCode") != 0:
+    interval_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15m"}
+    iv = interval_map.get(period, period)
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/contract_stats",
+               {"contract": contract, "interval": iv, "limit": limit})
+    if not data:
         return None
-    rows = data["result"]["list"]
-    if not rows:
-        return None
-    df = pd.DataFrame(rows)
-    df["longAccount"]    = pd.to_numeric(df["buyRatio"],  errors="coerce")
-    df["shortAccount"]   = pd.to_numeric(df["sellRatio"], errors="coerce")
-    df["longShortRatio"] = df["longAccount"] / df["shortAccount"].replace(0, np.nan)
-    df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms", utc=True)
+    df = pd.DataFrame(data)
+    # lsr_account: ratio long/short accounts (e.g. 1.5 = 60% long, 40% short)
+    df["lsr"] = pd.to_numeric(df["lsr_account"], errors="coerce")
+    # Convert ratio to longAccount fraction: ratio/(1+ratio)
+    df["longAccount"]  = df["lsr"] / (1 + df["lsr"])
+    df["shortAccount"] = 1 - df["longAccount"]
+    df["longShortRatio"] = df["lsr"]
+    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
     df = df.sort_values("timestamp")
     return df
 
 
 def fetch_top_trader_ratio(symbol, period="1h", limit=24):
-    """Bybit doesn't have a separate top-trader endpoint — reuse account ratio."""
-    return None   # gracefully absent; caller handles None
+    """Not available on Gate.io public API — returns None gracefully."""
+    return None
 
 
 def fetch_current_price(symbol):
-    data = get(f"{BYBIT_BASE}/v5/market/tickers",
-               {"category": "linear", "symbol": symbol})
-    if data and data.get("retCode") == 0:
-        items = data["result"]["list"]
-        if items:
-            return float(items[0]["lastPrice"])
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/tickers",
+               {"contract": contract})
+    if data and len(data) > 0:
+        return float(data[0]["last"])
     return None
 
 
