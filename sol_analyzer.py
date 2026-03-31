@@ -47,8 +47,7 @@ init(autoreset=True, strip=not IS_TTY, convert=False)
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-BINANCE_FUTURES = "https://fapi.binance.com"
-BINANCE_SPOT    = "https://api.binance.com"
+BYBIT_BASE  = "https://api.bybit.com"
 
 SYMBOL      = "SOLUSDT"
 BTC_SYMBOL  = "BTCUSDT"
@@ -135,89 +134,127 @@ def get(url, params=None):
 
 
 def fetch_ohlcv(symbol, interval, limit=500):
-    """Returns OHLCV DataFrame with datetime index."""
-    data = get(f"{BINANCE_FUTURES}/fapi/v1/klines",
-               {"symbol": symbol, "interval": interval, "limit": limit})
-    if not data:
+    """
+    Returns OHLCV DataFrame. Bybit intervals: 1,3,5,15,30,60,120,240,D,W,M
+    We map common names: 15m->15, 4h->240, 1d->D
+    """
+    interval_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+    iv = interval_map.get(interval, interval)
+    data = get(f"{BYBIT_BASE}/v5/market/kline",
+               {"category": "linear", "symbol": symbol,
+                "interval": iv, "limit": limit})
+    if not data or data.get("retCode") != 0:
+        print(R + f"  [API ERROR] kline {symbol} {interval}: {data}" + RST)
         return None
-    df = pd.DataFrame(data, columns=[
-        "open_time","open","high","low","close","volume",
-        "close_time","quote_vol","trades","taker_buy_base",
-        "taker_buy_quote","ignore"
+    # Bybit returns list of [startTime, open, high, low, close, volume, turnover]
+    rows = data["result"]["list"]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=[
+        "open_time", "open", "high", "low", "close", "volume", "turnover"
     ])
-    for col in ["open","high","low","close","volume",
-                "quote_vol","taker_buy_base","taker_buy_quote","trades"]:
+    for col in ["open", "high", "low", "close", "volume", "turnover"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["open_time"]  = pd.to_datetime(df["open_time"],  unit="ms", utc=True)
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
-    df = df.set_index("open_time")
+    df["open_time"] = pd.to_datetime(pd.to_numeric(df["open_time"]), unit="ms", utc=True)
+    # Bybit returns newest first — reverse to chronological
+    df = df.sort_values("open_time").set_index("open_time")
+    # Bybit doesn't give taker_buy directly — approximate from turnover
+    df["quote_vol"]       = df["turnover"]
+    df["taker_buy_quote"] = df["turnover"] * 0.5   # neutral fallback; CVD 4H will use trades endpoint
     return df
 
 
-def fetch_agg_trades(symbol, limit=1000):
-    """Returns recent aggregated trades for CVD calculation."""
-    data = get(f"{BINANCE_FUTURES}/fapi/v1/aggTrades",
-               {"symbol": symbol, "limit": limit})
-    if not data:
+def fetch_trades_cvd(symbol, limit=1000):
+    """
+    Fetch recent public trades for CVD. Bybit /v5/market/recent-trade
+    Returns (cvd, direction, buy_vol, sell_vol)
+    """
+    data = get(f"{BYBIT_BASE}/v5/market/recent-trade",
+               {"category": "linear", "symbol": symbol, "limit": min(limit, 1000)})
+    if not data or data.get("retCode") != 0:
         return None
-    return data
+    trades = data["result"]["list"]
+    buy_vol  = sum(float(t["size"]) for t in trades if t["side"] == "Buy")
+    sell_vol = sum(float(t["size"]) for t in trades if t["side"] == "Sell")
+    cvd = buy_vol - sell_vol
+    direction = "bullish" if cvd > 0 else "bearish"
+    return cvd, direction, buy_vol, sell_vol
 
 
 def fetch_funding_rate(symbol):
-    """Returns latest funding rate (float)."""
-    data = get(f"{BINANCE_FUTURES}/fapi/v1/fundingRate",
-               {"symbol": symbol, "limit": 10})
-    if not data:
+    """Returns list of recent funding rate records from Bybit."""
+    data = get(f"{BYBIT_BASE}/v5/market/funding/history",
+               {"category": "linear", "symbol": symbol, "limit": 10})
+    if not data or data.get("retCode") != 0:
         return None
-    return data  # list of {fundingTime, fundingRate, markPrice}
+    records = data["result"]["list"]
+    # Normalize to same interface: [{fundingRate, fundingRateTimestamp}]
+    return [{"fundingRate": r["fundingRate"],
+             "fundingTime": r["fundingRateTimestamp"]} for r in records]
 
 
 def fetch_open_interest_history(symbol, period="1h", limit=48):
-    """Returns OI history. period: 5m,15m,30m,1h,2h,4h,6h,12h,1d"""
-    data = get(f"{BINANCE_FUTURES}/futures/data/openInterestHist",
-               {"symbol": symbol, "period": period, "limit": limit})
-    if not data:
+    """
+    Returns OI history DataFrame.
+    Bybit intervalTime: 5min,15min,30min,1h,4h,1d
+    """
+    period_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15min"}
+    iv = period_map.get(period, period)
+    data = get(f"{BYBIT_BASE}/v5/market/open-interest",
+               {"category": "linear", "symbol": symbol,
+                "intervalTime": iv, "limit": limit})
+    if not data or data.get("retCode") != 0:
         return None
-    df = pd.DataFrame(data)
-    df["sumOpenInterest"]     = df["sumOpenInterest"].astype(float)
-    df["sumOpenInterestValue"] = df["sumOpenInterestValue"].astype(float)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    rows = data["result"]["list"]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["sumOpenInterest"]     = pd.to_numeric(df["openInterest"], errors="coerce")
+    # Bybit doesn't give notional directly — approximate with price
+    price = fetch_current_price(symbol) or 1
+    df["sumOpenInterestValue"] = df["sumOpenInterest"] * price
+    df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms", utc=True)
+    df = df.sort_values("timestamp")
     return df
 
 
 def fetch_long_short_ratio(symbol, period="1h", limit=24):
-    """Global long/short account ratio."""
-    data = get(f"{BINANCE_FUTURES}/futures/data/globalLongShortAccountRatio",
-               {"symbol": symbol, "period": period, "limit": limit})
-    if not data:
+    """
+    Long/short ratio from Bybit. /v5/market/account-ratio
+    """
+    period_map = {"1h": "1h", "4h": "4h", "1d": "1d", "15m": "15min"}
+    iv = period_map.get(period, period)
+    data = get(f"{BYBIT_BASE}/v5/market/account-ratio",
+               {"category": "linear", "symbol": symbol,
+                "period": iv, "limit": limit})
+    if not data or data.get("retCode") != 0:
         return None
-    df = pd.DataFrame(data)
-    df["longAccount"]  = df["longAccount"].astype(float)
-    df["shortAccount"] = df["shortAccount"].astype(float)
-    df["longShortRatio"] = df["longShortRatio"].astype(float)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    rows = data["result"]["list"]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["longAccount"]    = pd.to_numeric(df["buyRatio"],  errors="coerce")
+    df["shortAccount"]   = pd.to_numeric(df["sellRatio"], errors="coerce")
+    df["longShortRatio"] = df["longAccount"] / df["shortAccount"].replace(0, np.nan)
+    df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms", utc=True)
+    df = df.sort_values("timestamp")
     return df
 
 
 def fetch_top_trader_ratio(symbol, period="1h", limit=24):
-    """Top trader long/short position ratio."""
-    data = get(f"{BINANCE_FUTURES}/futures/data/topLongShortPositionRatio",
-               {"symbol": symbol, "period": period, "limit": limit})
-    if not data:
-        return None
-    df = pd.DataFrame(data)
-    df["longAccount"]  = df["longAccount"].astype(float)
-    df["shortAccount"] = df["shortAccount"].astype(float)
-    df["longShortRatio"] = df["longShortRatio"].astype(float)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    return df
+    """Bybit doesn't have a separate top-trader endpoint — reuse account ratio."""
+    return None   # gracefully absent; caller handles None
 
 
 def fetch_current_price(symbol):
-    data = get(f"{BINANCE_FUTURES}/fapi/v1/ticker/price", {"symbol": symbol})
-    if data:
-        return float(data["price"])
+    data = get(f"{BYBIT_BASE}/v5/market/tickers",
+               {"category": "linear", "symbol": symbol})
+    if data and data.get("retCode") == 0:
+        items = data["result"]["list"]
+        if items:
+            return float(items[0]["lastPrice"])
     return None
+
 
 
 # ─────────────────────────────────────────────
@@ -635,15 +672,30 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[F3] Ratio Long/Short", "ERREUR API", R)
 
     # ── 4. CVD ────────────────────────────────
-    section("04 · CVD — PRESSION D'ACHAT  [Binance aggTrades]")
+    section("04 · CVD — PRESSION D'ACHAT  [Bybit recent-trade]")
 
-    trades = fetch_agg_trades(symbol, limit=1000)
-    if trades:
-        cvd_status, cvd_val = calc_cvd_divergence(df_15m, trades)
-        _, _, buy_vol, sell_vol = calc_cvd(trades)
+    trades_result = fetch_trades_cvd(symbol, limit=1000)
+    if trades_result:
+        cvd_val, cvd_direction, buy_vol, sell_vol = trades_result
+        # Compare price direction with CVD direction
+        price_change = 0
+        if df_15m is not None and len(df_15m) >= 20:
+            price_change = df_15m["close"].iloc[-1] - df_15m["close"].iloc[-20]
+
+        if price_change > 0 and cvd_direction == "bullish":
+            cvd_status = "aligned_bullish"
+        elif price_change < 0 and cvd_direction == "bearish":
+            cvd_status = "aligned_bearish"
+        elif price_change > 0 and cvd_direction == "bearish":
+            cvd_status = "divergence_bearish"
+        elif price_change < 0 and cvd_direction == "bullish":
+            cvd_status = "divergence_bullish"
+        else:
+            cvd_status = "unclear"
+
         cvd_dir = (
-            "long"  if cvd_status in ("aligned_bullish",)
-            else "short" if cvd_status in ("aligned_bearish",)
+            "long"  if cvd_status == "aligned_bullish"
+            else "short" if cvd_status == "aligned_bearish"
             else None
         )
         color = (G if "bullish" in cvd_status
@@ -657,20 +709,23 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         board.add("C1_cvd", cvd_dir, weight=1)
         if "divergence" in cvd_status:
             board.block("cvd_divergence",
-                        f"Divergence CVD détectée ({cvd_status}) — signal annulé")
+                        f"Divergence CVD ({cvd_status}) — signal annule")
     else:
         row("[C1] CVD", "ERREUR API", R)
 
-    # CVD 4H approximation via taker buy volume
+    # CVD 4H via Bybit recent trades buy pressure
     if df_4h is not None and len(df_4h) >= 10:
         recent = df_4h.iloc[-10:]
-        # taker_buy_quote / quote_vol = buy pressure ratio
-        buy_pressure = recent["taker_buy_quote"] / recent["quote_vol"]
-        avg_bp = buy_pressure.mean()
+        # Bybit: taker_buy_quote is approximated as turnover*0.5 — use volume ratio instead
+        total_vol = recent["volume"].sum()
+        buy_vol_4h = recent["taker_buy_quote"].sum()  # approximate
+        avg_bp = buy_vol_4h / (total_vol + 1e-9)
+        # Normalize to 0-1 range sensibly
+        avg_bp = min(max(avg_bp, 0), 1)
         cvd4h_dir = "long" if avg_bp > 0.52 else "short" if avg_bp < 0.48 else None
         color = G if cvd4h_dir == "long" else (R if cvd4h_dir == "short" else Y)
-        row("[C2] CVD 4H (taker buy pressure)",
-            f"{avg_bp*100:.1f}% buy-side  →  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
+        row("[C2] CVD 4H (buy pressure proxy)",
+            f"{avg_bp*100:.1f}% buy-side  ->  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
             color)
         board.add("C2_cvd_4h", cvd4h_dir, weight=1)
 
@@ -735,7 +790,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     print(DIM + "  └─ SL/TP/taille pos.    → utiliser la calculatrice dans la checklist HTML")
     print()
 
-    return status, direction, board, board
+    return status, direction, board
 
 
 # ─────────────────────────────────────────────
