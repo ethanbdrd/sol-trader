@@ -797,74 +797,80 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 # TELEGRAM
 # ─────────────────────────────────────────────
 def send_telegram(text: str) -> bool:
-    """Envoie un message Telegram. Retourne True si OK."""
+    """Envoie un message Telegram en texte brut. Retourne True si OK."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(Y + "  [TELEGRAM] Token ou chat_id manquant — notif ignorée." + RST)
+        print(Y + "  [TELEGRAM] Token ou chat_id manquant — notif ignoree." + RST)
         print(DIM + "  Exporte TELEGRAM_TOKEN et TELEGRAM_CHAT_ID." + RST)
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    # Pas de parse_mode — texte brut, zero risque de 400 Bad Request
     payload = {
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       text,
-        "parse_mode": "HTML",
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text":    text,
     }
     try:
         r = requests.post(url, json=payload, timeout=TIMEOUT)
-        r.raise_for_status()
-        print(G + "  [TELEGRAM] Notification envoyée." + RST)
+        if not r.ok:
+            # Log le body pour debugger facilement
+            print(R + f"  [TELEGRAM] Erreur {r.status_code}: {r.text[:300]}" + RST)
+            return False
+        print(G + "  [TELEGRAM] Notification envoyee." + RST)
         return True
     except requests.exceptions.RequestException as e:
-        print(R + f"  [TELEGRAM] Erreur d'envoi : {e}" + RST)
+        print(R + f"  [TELEGRAM] Erreur reseau : {e}" + RST)
         return False
 
 
 def build_telegram_message(status: str, direction, board, price: float,
                             long_pts: int, short_pts: int,
                             now_str: str, symbol: str) -> str:
-    """Construit le message Telegram en HTML."""
-    dir_emoji  = "🟢" if direction == "long" else ("🔴" if direction == "short" else "⚪")
-    dir_label  = "▲ LONG" if direction == "long" else ("▼ SHORT" if direction == "short" else "—")
+    """Construit le message Telegram en texte brut."""
+    dir_label = "LONG" if direction == "long" else ("SHORT" if direction == "short" else "?")
+
+    SEP = "-" * 40
 
     if status == "go":
-        title = f"{dir_emoji} <b>SIGNAL {dir_label} — SOL/USDT x10</b>"
+        header = f"[SIGNAL] {'▲' if direction=='long' else '▼'} {dir_label} -- SOL/USDT x10"
     elif status == "blocked":
-        title = "🚫 <b>BLOQUEUR ACTIF — NE PAS TRADER</b>"
+        header = "[BLOQUEUR] NE PAS TRADER -- SOL/USDT x10"
     elif status == "possible":
-        title = f"〜 <b>{dir_label} POSSIBLE — SOL/USDT x10</b>"
+        header = f"[POSSIBLE] {'▲' if direction=='long' else '▼'} {dir_label} -- SOL/USDT x10"
     else:
-        title = "⚪ <b>Pas de signal — SOL/USDT x10</b>"
+        header = "[INFO] Pas de signal -- SOL/USDT x10"
 
     lines = [
-        title,
-        f"<code>{now_str}</code>  •  Prix : <b>{price:.4f} USDT</b>",
+        SEP,
+        header,
+        SEP,
+        f"Date  : {now_str}",
+        f"Prix  : {price:.4f} USDT",
+        f"Score : LONG {long_pts} pts / SHORT {short_pts} pts",
         "",
-        f"Points  ▲ LONG <b>{long_pts}</b>  /  ▼ SHORT <b>{short_pts}</b>",
     ]
 
-    # Blockers
     if board.is_blocked:
-        lines.append("")
-        lines.append("🚧 <b>Bloqueurs :</b>")
+        lines.append("== BLOQUEURS ==")
         for name, reason in board.blockers:
-            lines.append(f"  • <code>{name}</code> — {reason}")
+            # Truncate long reasons cleanly
+            r = reason[:120] + "..." if len(reason) > 120 else reason
+            lines.append(f"  ! {name}: {r}")
+        lines.append("")
 
-    # Top signals
     actionable = [s for s in board.signals if s[1] is not None]
     if actionable:
-        lines.append("")
-        lines.append("📊 <b>Signaux :</b>")
+        lines.append("== SIGNAUX ==")
         for name, sig_dir, weight, detail in actionable[-8:]:
-            arrow = "▲" if sig_dir == "long" else "▼"
-            w_str = " (x2)" if weight == 2 else ""
-            lines.append(f"  {arrow} <code>{name}</code>{w_str}")
+            arrow = "+" if sig_dir == "long" else "-"
+            w_str = " [x2]" if weight == 2 else ""
+            lines.append(f"  {arrow} {name}{w_str}")
+        lines.append("")
 
     lines += [
-        "",
-        "⚠️ <i>Vérifier manuellement : Heatmap + Calendrier macro + OB/FVG + SL/TP</i>",
-        "",
-        f"🔗 <a href='https://coinank.com/chart/derivatives/liq-heat-map/solusdt/1w'>Heatmap</a>"
-        f"  •  <a href='https://fr.investing.com/economic-calendar/'>Macro</a>"
-        f"  •  <a href='https://velo.xyz/futures/SOL'>CVD</a>",
+        "== VERIFICATION MANUELLE ==",
+        "  Heatmap : coinank.com/chart/derivatives/liq-heat-map/solusdt/1w",
+        "  Macro   : fr.investing.com/economic-calendar",
+        "  CVD     : velo.xyz/futures/SOL",
+        SEP,
     ]
     return "\n".join(lines)
 
