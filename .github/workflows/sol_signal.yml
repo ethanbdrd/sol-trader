@@ -40,6 +40,15 @@ jobs:
           key: sol-signal-state-${{ github.ref_name }}
           restore-keys: sol-signal-state-
 
+      - name: Test API access
+        run: |
+          curl -s "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=SOL_USDT" | head -c 200
+          echo ""
+          curl -s "https://api.binance.com/api/v3/ping" | head -c 100
+          echo ""
+          curl -o /dev/null -s -w "Bybit: %{http_code}\n" "https://api.bybit.com/v5/market/tickers?category=linear&symbol=SOLUSDT"
+          curl -o /dev/null -s -w "Gate.io: %{http_code}\n" "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=SOL_USDT"
+
       - name: Run analyzer
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
