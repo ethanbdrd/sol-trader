@@ -39,7 +39,10 @@ import json
 from datetime import datetime, timezone, timedelta
 from colorama import init, Fore, Back, Style
 
-init(autoreset=True)
+# strip=False + convert=False en CI (pas de TTY) pour eviter les crashes
+# colorama detecte automatiquement si stdout est un terminal
+IS_TTY = sys.stdout.isatty()
+init(autoreset=True, strip=not IS_TTY, convert=False)
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -109,12 +112,13 @@ def verdict_box(label, color, bg=None):
     w = 60
     pad = (w - len(label) - 4) // 2
     line = " " * pad + f"  {label}  " + " " * pad
-    if bg:
+    # Background colors suppressed in non-TTY (CI) to avoid encoding issues
+    if bg and IS_TTY:
         print(bg + color + Style.BRIGHT + f"\n  {line}\n" + RST)
     else:
-        print(color + Style.BRIGHT + f"\n  ╔{'═'*(w-4)}╗")
-        print(f"  ║{line[:w-4]}║")
-        print(f"  ╚{'═'*(w-4)}╝" + RST)
+        print(color + Style.BRIGHT + f"\n  {'='*(w-4)}")
+        print(f"  {line[:w-4]}")
+        print(f"  {'='*(w-4)}" + RST)
 
 
 # ─────────────────────────────────────────────
