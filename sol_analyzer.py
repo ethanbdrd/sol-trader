@@ -508,7 +508,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
               f"{DIM}BTC  {W}{btc_price:,.2f} USDT" if btc_price else "")
 
     # ── 1. STRUCTURE DE MARCHÉ ─────────────────
-    section("01 · STRUCTURE DE MARCHÉ  [TradingView / Binance OHLCV]")
+    section("01 · STRUCTURE DE MARCHÉ  [Gate.io OHLCV]")
 
     # Daily data → MA200 + structure
     df_daily = fetch_ohlcv(symbol, "1d", limit=250)
@@ -616,7 +616,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[M3] Biais BTC", "ERREUR API", R)
 
     # ── 3. SENTIMENT & DÉRIVÉS ────────────────
-    section("03 · SENTIMENT & DÉRIVÉS  [Binance Futures]")
+    section("03 · SENTIMENT & DÉRIVÉS  [Gate.io]")
 
     # F1 — Funding Rate
     funding_data = fetch_funding_rate(symbol)
@@ -676,7 +676,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[F3] Ratio Long/Short", "ERREUR API", R)
 
     # ── 4. CVD ────────────────────────────────
-    section("04 · CVD — PRESSION D'ACHAT  [Bybit recent-trade]")
+    section("04 · CVD — PRESSION D'ACHAT  [Gate.io recent-trade]")
 
     trades_result = fetch_trades_cvd(symbol, limit=1000)
     if trades_result:
@@ -709,7 +709,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         signal_row("[C1] CVD (last 1000 trades)",
                    cvd_status.upper().replace("_", " "),
                    color, cvd_dir,
-                   f"CVD={cvd_val:+.2f} SOL  |  buy%={buy_ratio:.1f}%  |  sell%={100-buy_ratio:.1f}%")
+                   f"CVD={cvd_val:+.0f} contracts  |  buy%={buy_ratio:.1f}%  |  sell%={100-buy_ratio:.1f}%")
         board.add("C1_cvd", cvd_dir, weight=1)
         if "divergence" in cvd_status:
             board.block("cvd_divergence",
@@ -717,19 +717,19 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     else:
         row("[C1] CVD", "ERREUR API", R)
 
-    # CVD 4H via Bybit recent trades buy pressure
+    # CVD 4H : Gate.io ne fournit pas le taker split par bougie
+    # On utilise le momentum prix (close vs open) sur les 10 dernières bougies 4H
+    # comme proxy directionnel — simple mais sans bug d'unité
     if df_4h is not None and len(df_4h) >= 10:
         recent = df_4h.iloc[-10:]
-        # Bybit: taker_buy_quote is approximated as turnover*0.5 — use volume ratio instead
-        total_vol = recent["volume"].sum()
-        buy_vol_4h = recent["taker_buy_quote"].sum()  # approximate
-        avg_bp = buy_vol_4h / (total_vol + 1e-9)
-        # Normalize to 0-1 range sensibly
-        avg_bp = min(max(avg_bp, 0), 1)
-        cvd4h_dir = "long" if avg_bp > 0.52 else "short" if avg_bp < 0.48 else None
+        bullish_candles = (recent["close"] > recent["open"]).sum()
+        bearish_candles = (recent["close"] < recent["open"]).sum()
+        bull_ratio = bullish_candles / len(recent)
+        cvd4h_dir = "long" if bull_ratio > 0.60 else "short" if bull_ratio < 0.40 else None
         color = G if cvd4h_dir == "long" else (R if cvd4h_dir == "short" else Y)
-        row("[C2] CVD 4H (buy pressure proxy)",
-            f"{avg_bp*100:.1f}% buy-side  ->  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
+        row("[C2] Momentum 4H (10 dernieres bougies)",
+            f"{bullish_candles} haussières / {bearish_candles} baissières"
+            f"  ->  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
             color)
         board.add("C2_cvd_4h", cvd4h_dir, weight=1)
 
