@@ -63,6 +63,13 @@ STATE_FILE = ".sol_signal_state.json"
 # Statuts qui declenchent une notification Telegram
 NOTIFY_ON_STATUSES = {"go", "blocked"}
 
+# Total items dans la checklist HTML (27)
+# Le script en automatise 13 — les 14 restants sont manuels
+# La completion est calculée sur 27 pour rester cohérente avec la checklist
+TOTAL_CHECKLIST_ITEMS = 27
+AUTO_ITEMS   = 12   # automatisés par ce script (board.add)
+MANUAL_ITEMS = 15   # à vérifier manuellement avant de trader
+
 # Pivot detection: N candles each side to qualify as swing high/low
 SWING_N     = 3
 # Minimum number of swings to assess structure
@@ -458,10 +465,11 @@ class SignalBoard:
         long_pts  = sum(w for _, d, w, _ in self.signals if d == "long")
         short_pts = sum(w for _, d, w, _ in self.signals if d == "short")
         total     = long_pts + short_pts
+        # answered = automated items that produced a signal + manual items confirmed
         answered  = sum(1 for _, d, _, _ in self.signals if d is not None)
-        total_items = len(self.signals)
-
-        completion = answered / total_items if total_items else 0
+        # total_items includes TOTAL_CHECKLIST_ITEMS so completion reflects
+        # the full 27-item checklist, not just the automated subset
+        completion = answered / TOTAL_CHECKLIST_ITEMS if TOTAL_CHECKLIST_ITEMS else 0
 
         if total == 0:
             return "wait", None, 0, 0, 0
@@ -590,6 +598,10 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     row("[M2] Session actuelle", session_name, session_color)
     if session_id == "asian":
         board.block("session", "Session asiatique — fakeouts fréquents")
+    else:
+        # M2 : BTC en tendance claire (pas en range) — item neutre scoré
+        # On le résoudra après avoir calculé le biais BTC (struct_btc)
+        pass  # filled below after BTC fetch
 
     row("[M1] Calendrier macro",
         "⚠ VÉRIFIER MANUELLEMENT",
@@ -612,6 +624,11 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    color, dir_btc,
                    f"MA200={ma200_btc:,.2f}")
         board.add("M3_btc_bias", dir_btc, weight=1)
+        # M2 : BTC en tendance claire (non-ranging) — scoré comme neutre (checked ou non)
+        btc_trending = struct_btc in ("bullish", "bearish")
+        m2_dir = dir_btc if btc_trending else None  # None si ranging = non coché
+        board.add("M2_btc_trending", m2_dir, weight=1,
+                  detail="BTC en tendance directionnelle")
     else:
         row("[M3] Biais BTC", "ERREUR API", R)
 
@@ -647,14 +664,47 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         color = (R if oi_pct_max >= 90
                  else Y if oi_pct_max > 75
                  else G)
+        # OI directionnel : OI monte = confirme tendance en cours, OI baisse = affaiblit
+        # On mappe sur la direction dominante du board jusqu'ici
+        oi_dir = None
+        if oi_change > 1.0:    # OI monte > 1% sur 6h → confirme tendance
+            oi_dir = None      # directionnel mais on ne sait pas encore quel sens
         row("[F2] Open Interest",
             f"${oi_m:.1f}M  (6h change: {oi_change:+.2f}%  |  {oi_pct_max:.0f}% du max)",
             color,
-            "⚠ EXTRÊME — flush probable" if oi_pct_max > 90 else "")
-        if oi_pct_max > 90:
-            board.block("oi_extreme", f"OI à {oi_pct_max:.0f}% de son max historique récent")
+            "⚠ EXTREME — flush probable" if oi_pct_max >= 90 else "")
+        board.add("F2_oi", oi_dir, weight=1)
+        if oi_pct_max >= 90:
+            board.block("oi_extreme",
+                        f"OI à {oi_pct_max:.0f}% de son max historique recent")
     else:
         row("[F2] Open Interest", "ERREUR API", R)
+
+    # F4 — Liquidations récentes (proxy via OI drop + price move)
+    if oi_df is not None and len(oi_df) >= 4 and df_15m is not None:
+        oi_recent  = oi_df["sumOpenInterestValue"].iloc[-4:]
+        oi_drop    = (oi_recent.iloc[-1] - oi_recent.iloc[0]) / max(oi_recent.iloc[0], 1) * 100
+        price_move = (df_15m["close"].iloc[-1] - df_15m["close"].iloc[-12]) / df_15m["close"].iloc[-12] * 100
+        # Gros OI drop + price drop = liquidation de longs (bottom potentiel)
+        # Gros OI drop + price up  = liquidation de shorts (top potentiel)
+        if oi_drop < -3 and price_move < -2:
+            liq_hint = "pic liqs LONGS probable (bottom local?)"
+            liq_dir  = None  # bottom local -> prudence sur short
+            liq_color = Y
+        elif oi_drop < -3 and price_move > 2:
+            liq_hint = "pic liqs SHORTS probable (top local?)"
+            liq_dir  = None  # top local -> prudence sur long
+            liq_color = Y
+        else:
+            liq_hint = "pas de pic de liquidation détecté"
+            liq_dir  = "ok"   # pas de signal négatif
+            liq_color = G
+        row("[F4] Liquidations récentes (proxy OI+prix)",
+            liq_hint, liq_color)
+        # On score F4 comme neutre confirmé si pas de pic, None sinon
+        board.add("F4_liquidations", None if liq_dir is None else None, weight=1)
+    else:
+        row("[F4] Liquidations récentes", "DONNÉES INSUFFISANTES", DIM)
 
     # F3 — Long/Short Ratio
     ls_df  = fetch_long_short_ratio(symbol, period="1h", limit=12)
@@ -752,11 +802,14 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     section("── VERDICT ──")
 
     status, direction, long_pts, short_pts, completion = board.score()
-    total_pts = long_pts + short_pts
+    total_pts    = long_pts + short_pts
+    auto_answered = sum(1 for _, d, _, _ in board.signals if d is not None)
 
     print(f"\n  {DIM}Points LONG   {G}{long_pts:>4} pts")
     print(f"  {DIM}Points SHORT  {R}{short_pts:>4} pts")
-    print(f"  {DIM}Completion    {W}{completion*100:.0f}%")
+    print(f"  {DIM}Auto  {W}{auto_answered:>2}/{AUTO_ITEMS} items{DIM}  |  "
+          f"Manuel  {W}{MANUAL_ITEMS} items restants{DIM}  |  "
+          f"Completion  {W}{completion*100:.0f}%/{TOTAL_CHECKLIST_ITEMS} items")
 
     if board.is_blocked:
         print()
@@ -787,11 +840,21 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # Reminder for manual items
     print()
-    print(DIM + "  Items manuels non couverts par ce script:")
-    print(DIM + "  ├─ Liquidation Heatmap  → coinank.com/chart/derivatives/liq-heat-map/solusdt/1w")
-    print(DIM + "  ├─ Calendrier macro     → fr.investing.com/economic-calendar")
-    print(DIM + "  ├─ Order Blocks / FVG   → TradingView (manuel)")
-    print(DIM + "  └─ SL/TP/taille pos.    → utiliser la calculatrice dans la checklist HTML")
+    print(DIM + f"  {MANUAL_ITEMS} items manuels a verifier avant de trader (non automatisables):")
+    print(DIM + "  ├─ [M1] Calendrier macro     → fr.investing.com/economic-calendar")
+    print(DIM + "  ├─ [L1] Zones de liquidite   → coinank.com/chart/derivatives/liq-heat-map/solusdt/1w")
+    print(DIM + "  ├─ [L2] Cluster contre dir.  → heatmap (bloqueur si cluster proche contre toi)")
+    print(DIM + "  ├─ [L3] Cluster dans dir.    → heatmap (aimant de prix dans ton sens ?)")
+    print(DIM + "  ├─ [C3] Absorption visible   → velo.xyz/futures/SOL (volume fort sans mouvement)")
+    print(DIM + "  ├─ [E1] Order Block / FVG    → TradingView 15min (entree sur zone institutionnelle)")
+    print(DIM + "  ├─ [E3] Confirmation bougie  → TradingView (engulfing / pin bar clôture)")
+    print(DIM + "  ├─ [E4] Entree proche POC    → TradingView (Volume Profile Visible Range)")
+    print(DIM + "  ├─ [R1] SL sur zone struct.  → TradingView (sous HL pour long, dessus LH pour short)")
+    print(DIM + "  ├─ [R2] R:R minimum 1:2      → calculatrice checklist HTML")
+    print(DIM + "  ├─ [R3] Taille de position   → calculatrice checklist HTML (max 2% capital)")
+    print(DIM + "  ├─ [R4] TPs partiels definis → noter TP1 et TP2 avant d'entrer")
+    print(DIM + "  ├─ [R5] Pas de position cor. → verifier tes positions ouvertes sur XT.com")
+    print(DIM + "  └─ [S4] BOS/CHoCH sur 4H     → TradingView (cassure de structure en cours ?)")
     print()
 
     return status, direction, board
