@@ -644,7 +644,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     if oi_df is not None:
         oi_change, oi_current, oi_pct_max = assess_oi(oi_df)
         oi_m = oi_current / 1e6
-        color = (R if oi_pct_max > 90
+        color = (R if oi_pct_max >= 90
                  else Y if oi_pct_max > 75
                  else G)
         row("[F2] Open Interest",
