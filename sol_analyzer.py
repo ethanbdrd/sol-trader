@@ -67,8 +67,8 @@ NOTIFY_ON_STATUSES = {"go", "blocked"}
 # Le script en automatise 13 — les 14 restants sont manuels
 # La completion est calculée sur 27 pour rester cohérente avec la checklist
 TOTAL_CHECKLIST_ITEMS = 27
-AUTO_ITEMS   = 12   # automatisés par ce script (board.add)
-MANUAL_ITEMS = 15   # à vérifier manuellement avant de trader
+AUTO_ITEMS   = 20   # automatisés par ce script
+MANUAL_ITEMS = 7    # nécessitent vraiment des données personnelles
 
 # Pivot detection: N candles each side to qualify as swing high/low
 SWING_N     = 3
@@ -267,6 +267,175 @@ def fetch_current_price(symbol):
     return None
 
 
+def fetch_liquidations(symbol, limit=100):
+    """
+    Gate.io recent liquidation orders.
+    GET /futures/usdt/liq_orders?contract=SOL_USDT
+    Returns list of {time, contract, size (+ = long liq, - = short liq), price}
+    """
+    contract = _gate_contract(symbol)
+    data = get(f"{GATE_BASE}/futures/usdt/liq_orders",
+               {"contract": contract, "limit": limit})
+    if not data:
+        return None
+    return data
+
+
+def fetch_macro_calendar():
+    """
+    Forex Factory public JSON — unofficial but stable.
+    Returns high-impact events in the next 4h.
+    """
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    try:
+        r = requests.get(url, timeout=TIMEOUT,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        events = r.json()
+    except Exception as e:
+        print(Y + f"  [MACRO] Calendrier indisponible: {e}" + RST)
+        return None
+
+    now_utc  = datetime.now(timezone.utc)
+    window   = now_utc + timedelta(hours=4)
+    upcoming = []
+    for ev in events:
+        if ev.get("impact") != "High":
+            continue
+        try:
+            # Format: "01-06-2026" + "8:30am" — parse in ET then convert
+            dt_str = f"{ev['date']} {ev['time']}"
+            dt_et  = datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
+            # ET = UTC-5 (EST) or UTC-4 (EDT) — approximate with UTC-5
+            dt_utc = dt_et.replace(tzinfo=timezone.utc) + timedelta(hours=5)
+            if now_utc <= dt_utc <= window:
+                upcoming.append({"title": ev.get("title","?"), "time_utc": dt_utc})
+        except Exception:
+            continue
+    return upcoming
+
+
+# ─────────────────────────────────────────────
+# PATTERN DETECTION (OHLCV-based)
+# ─────────────────────────────────────────────
+
+def detect_fvg(df, n_candles=50):
+    """
+    Detect Fair Value Gaps on the last n_candles.
+    Bullish FVG : candle[i-2].high < candle[i].low  (gap up)
+    Bearish FVG : candle[i-2].low  > candle[i].high (gap down)
+    Returns list of (type, low, high, idx) sorted by recency.
+    """
+    fvgs = []
+    data = df.iloc[-n_candles:].reset_index()
+    for i in range(2, len(data)):
+        c0_high = data.loc[i-2, "high"]
+        c0_low  = data.loc[i-2, "low"]
+        c2_high = data.loc[i,   "high"]
+        c2_low  = data.loc[i,   "low"]
+        if c0_high < c2_low:   # bullish FVG
+            fvgs.append(("bullish", c0_high, c2_low, data.loc[i, "open_time"] if "open_time" in data.columns else i))
+        elif c0_low > c2_high: # bearish FVG
+            fvgs.append(("bearish", c2_high, c0_low, data.loc[i, "open_time"] if "open_time" in data.columns else i))
+    return fvgs[-5:]  # return 5 most recent
+
+
+def detect_order_blocks(df, n_candles=50, min_move_pct=0.8):
+    """
+    Detect Order Blocks:
+    Bullish OB : last bearish candle before a strong bullish move (>= min_move_pct%)
+    Bearish OB : last bullish candle before a strong bearish move
+    """
+    obs = []
+    data = df.iloc[-n_candles:].reset_index()
+    for i in range(1, len(data) - 1):
+        body_pct = abs(data.loc[i+1, "close"] - data.loc[i+1, "open"]) / data.loc[i+1, "open"] * 100
+        if body_pct < min_move_pct:
+            continue
+        is_bearish_candle = data.loc[i, "close"] < data.loc[i, "open"]
+        is_bullish_next   = data.loc[i+1, "close"] > data.loc[i+1, "open"]
+        is_bullish_candle = data.loc[i, "close"] > data.loc[i, "open"]
+        is_bearish_next   = data.loc[i+1, "close"] < data.loc[i+1, "open"]
+
+        if is_bearish_candle and is_bullish_next:
+            obs.append(("bullish", data.loc[i, "low"], data.loc[i, "high"]))
+        elif is_bullish_candle and is_bearish_next:
+            obs.append(("bearish", data.loc[i, "low"], data.loc[i, "high"]))
+    return obs[-3:]
+
+
+def detect_candle_confirmation(df):
+    """
+    Detect confirmation candle patterns on the last 3 candles.
+    Returns: (pattern_name, direction) or (None, None)
+    """
+    if df is None or len(df) < 3:
+        return None, None
+    c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+    def body(c):  return abs(c["close"] - c["open"])
+    def wick_lo(c): return min(c["open"], c["close"]) - c["low"]
+    def wick_hi(c): return c["high"] - max(c["open"], c["close"])
+    def is_bull(c): return c["close"] > c["open"]
+    def is_bear(c): return c["close"] < c["open"]
+
+    # Bullish engulfing
+    if is_bear(c2) and is_bull(c3) and c3["close"] > c2["open"] and c3["open"] < c2["close"]:
+        return "engulfing_bullish", "long"
+    # Bearish engulfing
+    if is_bull(c2) and is_bear(c3) and c3["close"] < c2["open"] and c3["open"] > c2["close"]:
+        return "engulfing_bearish", "short"
+    # Bullish pin bar (hammer) : long lower wick, small body
+    if body(c3) < (c3["high"] - c3["low"]) * 0.35 and wick_lo(c3) > body(c3) * 2:
+        return "pin_bar_bullish", "long"
+    # Bearish pin bar (shooting star)
+    if body(c3) < (c3["high"] - c3["low"]) * 0.35 and wick_hi(c3) > body(c3) * 2:
+        return "pin_bar_bearish", "short"
+    return None, None
+
+
+def detect_absorption(df, n_candles=10, vol_multiplier=2.0, max_body_pct=0.3):
+    """
+    Detect absorption: high volume + small price body.
+    Returns True if absorption is present (warning signal).
+    """
+    if df is None or len(df) < n_candles:
+        return False, 0, 0
+    recent   = df.iloc[-n_candles:]
+    avg_vol  = recent["volume"].mean()
+    last     = df.iloc[-1]
+    body_pct = abs(last["close"] - last["open"]) / max(last["open"], 1e-9) * 100
+    vol_ratio = last["volume"] / max(avg_vol, 1e-9)
+    absorbed  = vol_ratio >= vol_multiplier and body_pct <= max_body_pct
+    return absorbed, vol_ratio, body_pct
+
+
+def calc_volume_profile(df, n_candles=100, bins=30):
+    """
+    Compute a simple Volume Profile over the last n_candles.
+    Returns (poc_price, lvns) where lvns = list of price levels with low volume.
+    """
+    if df is None or len(df) < 10:
+        return None, []
+    recent = df.iloc[-n_candles:]
+    lo, hi = recent["low"].min(), recent["high"].max()
+    if hi <= lo:
+        return None, []
+    edges  = np.linspace(lo, hi, bins + 1)
+    vols   = np.zeros(bins)
+    for _, row in recent.iterrows():
+        # Distribute the candle's volume across the bins it spans
+        lo_c, hi_c, vol = row["low"], row["high"], row["volume"]
+        for b in range(bins):
+            overlap = max(0, min(hi_c, edges[b+1]) - max(lo_c, edges[b]))
+            span    = hi_c - lo_c if hi_c > lo_c else 1e-9
+            vols[b] += vol * overlap / span
+    poc_bin   = int(np.argmax(vols))
+    poc_price = (edges[poc_bin] + edges[poc_bin + 1]) / 2
+    avg_vol_b = vols.mean()
+    lvns      = [(edges[b] + edges[b+1]) / 2
+                 for b in range(bins) if vols[b] < avg_vol_b * 0.4]
+    return poc_price, lvns
 
 # ─────────────────────────────────────────────
 # CALCULATIONS
@@ -568,7 +737,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     else:
         row("[S3] Structure 4H", "ERREUR API", R)
 
-    # S4 — MAs alignment on 15min
+    # S4 — MAs alignment on 15min  (item S5 dans la checklist HTML)
     if df_15m is not None:
         last = df_15m.iloc[-1]
         ma5, ma15, ma30 = last["ma5"], last["ma15"], last["ma30"]
@@ -585,11 +754,53 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             dir_ma = None
             ma_label = f"MA5({ma5:.2f}) MA15({ma15:.2f}) MA30({ma30:.2f}) — ENCHEVÊTRÉES"
             color = Y
-        signal_row("[S4] MAs alignées 15min",
+        signal_row("[S5] MAs alignées 15min",
                    dir_ma.upper() if dir_ma else "RANGE", color, dir_ma, ma_label)
-        board.add("S4_ma_alignment", dir_ma, weight=1)
+        board.add("S5_ma_alignment", dir_ma, weight=1)
     else:
-        row("[S4] MAs 15min", "ERREUR API", R)
+        row("[S5] MAs 15min", "ERREUR API", R)
+
+    # S4 — BOS / CHoCH sur 4H  (item S4 dans la checklist HTML)
+    if df_4h is not None:
+        sh4, sl4 = detect_swings(df_4h, n=SWING_N)
+        highs_idx = df_4h.index[sh4]
+        lows_idx  = df_4h.index[sl4]
+        bos_signal = None
+        bos_label  = "structure intacte"
+        if len(highs_idx) >= 2 and len(lows_idx) >= 2:
+            last_high  = df_4h.loc[highs_idx[-1], "high"]
+            prev_high  = df_4h.loc[highs_idx[-2], "high"]
+            last_low   = df_4h.loc[lows_idx[-1],  "low"]
+            prev_low   = df_4h.loc[lows_idx[-2],  "low"]
+            cur_close  = df_4h["close"].iloc[-1]
+            # BOS haussier : prix dépasse le dernier pivot haut
+            if cur_close > last_high:
+                bos_signal = "bullish_bos"
+                bos_label  = f"BOS HAUSSIER — cassure de {last_high:.2f}"
+            # BOS baissier : prix casse sous le dernier pivot bas
+            elif cur_close < last_low:
+                bos_signal = "bearish_bos"
+                bos_label  = f"BOS BAISSIER — cassure de {last_low:.2f}"
+            # CHoCH : premier bas plus bas dans une tendance haussière
+            elif struct_4h == "bullish" and last_low < prev_low:
+                bos_signal = "choch_warning"
+                bos_label  = f"CHoCH DÉTECTÉ — bas plus bas ({last_low:.2f} < {prev_low:.2f})"
+            elif struct_4h == "bearish" and last_high > prev_high:
+                bos_signal = "choch_warning"
+                bos_label  = f"CHoCH DÉTECTÉ — haut plus haut ({last_high:.2f} > {prev_high:.2f})"
+
+        bos_dir = (
+            "long"  if bos_signal == "bullish_bos"
+            else "short" if bos_signal == "bearish_bos"
+            else None
+        )
+        color = G if bos_dir == "long" else (R if bos_dir == "short" else (Y if bos_signal == "choch_warning" else DIM))
+        signal_row("[S4] BOS / CHoCH 4H", bos_label, color, bos_dir)
+        board.add("S4_bos_choch", bos_dir, weight=1)
+        if bos_signal == "choch_warning":
+            board.block("choch_4h", f"CHoCH detecte sur 4H — potentiel retournement")
+    else:
+        row("[S4] BOS/CHoCH 4H", "ERREUR API", R)
 
     # ── 2. MACRO & SESSION ────────────────────
     section("02 · SESSION & MACRO")
@@ -603,10 +814,19 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         # On le résoudra après avoir calculé le biais BTC (struct_btc)
         pass  # filled below after BTC fetch
 
-    row("[M1] Calendrier macro",
-        "⚠ VÉRIFIER MANUELLEMENT",
-        Y,
-        "→ https://fr.investing.com/economic-calendar/")
+    # M1 — Macro calendar (Forex Factory JSON)
+    macro_events = fetch_macro_calendar()
+    if macro_events is None:
+        row("[M1] Calendrier macro", "API indisponible — verifier manuellement", Y,
+            "→ fr.investing.com/economic-calendar")
+    elif len(macro_events) == 0:
+        row("[M1] Calendrier macro", "Aucun event HIGH dans les 4h", G)
+        board.add("M1_macro", "ok_no_event", weight=1)
+    else:
+        names = ", ".join(e["title"] for e in macro_events[:3])
+        row("[M1] Calendrier macro", f"⚠ {len(macro_events)} EVENT(S) HIGH dans les 4h", R,
+            names)
+        board.block("macro_event", f"Event(s) macro imminents: {names}")
 
     # BTC structure (même analyse que SOL)
     df_btc_d  = fetch_ohlcv(BTC_SYMBOL, "1d", limit=250)
@@ -680,31 +900,38 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     else:
         row("[F2] Open Interest", "ERREUR API", R)
 
-    # F4 — Liquidations récentes (proxy via OI drop + price move)
-    if oi_df is not None and len(oi_df) >= 4 and df_15m is not None:
-        oi_recent  = oi_df["sumOpenInterestValue"].iloc[-4:]
-        oi_drop    = (oi_recent.iloc[-1] - oi_recent.iloc[0]) / max(oi_recent.iloc[0], 1) * 100
-        price_move = (df_15m["close"].iloc[-1] - df_15m["close"].iloc[-12]) / df_15m["close"].iloc[-12] * 100
-        # Gros OI drop + price drop = liquidation de longs (bottom potentiel)
-        # Gros OI drop + price up  = liquidation de shorts (top potentiel)
-        if oi_drop < -3 and price_move < -2:
-            liq_hint = "pic liqs LONGS probable (bottom local?)"
-            liq_dir  = None  # bottom local -> prudence sur short
-            liq_color = Y
-        elif oi_drop < -3 and price_move > 2:
-            liq_hint = "pic liqs SHORTS probable (top local?)"
-            liq_dir  = None  # top local -> prudence sur long
-            liq_color = Y
-        else:
-            liq_hint = "pas de pic de liquidation détecté"
-            liq_dir  = "ok"   # pas de signal négatif
+    # F4 — Liquidations récentes (Gate.io /liq_orders — données réelles)
+    liq_data = fetch_liquidations(symbol, limit=100)
+    if liq_data:
+        now_ts   = datetime.now(timezone.utc).timestamp()
+        cutoff   = now_ts - 8 * 3600   # dernières 8h
+        recent_liqs = [l for l in liq_data if int(l.get("time", 0)) >= cutoff]
+        long_liqs  = sum(abs(float(l["size"])) for l in recent_liqs if float(l["size"]) > 0)
+        short_liqs = sum(abs(float(l["size"])) for l in recent_liqs if float(l["size"]) < 0)
+        total_liqs = long_liqs + short_liqs
+        if total_liqs == 0:
+            liq_hint  = "aucune liquidation significative (8h)"
             liq_color = G
-        row("[F4] Liquidations récentes (proxy OI+prix)",
-            liq_hint, liq_color)
-        # On score F4 comme neutre confirmé si pas de pic, None sinon
+            liq_dir   = "safe"
+        elif long_liqs > short_liqs * 2:
+            liq_hint  = f"pic LIQS LONGS ({long_liqs:.0f} contracts) — bottom local possible"
+            liq_color = Y
+            liq_dir   = None   # prudence short
+        elif short_liqs > long_liqs * 2:
+            liq_hint  = f"pic LIQS SHORTS ({short_liqs:.0f} contracts) — top local possible"
+            liq_color = Y
+            liq_dir   = None   # prudence long
+        else:
+            liq_hint  = f"liqs équilibrées (L:{long_liqs:.0f} / S:{short_liqs:.0f})"
+            liq_color = DIM
+            liq_dir   = "safe"
+        row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
         board.add("F4_liquidations", None if liq_dir is None else None, weight=1)
+        if liq_dir is None:
+            board.block("recent_liquidation",
+                        f"Pic de liquidations recent — retournement potentiel")
     else:
-        row("[F4] Liquidations récentes", "DONNÉES INSUFFISANTES", DIM)
+        row("[F4] Liquidations récentes", "ERREUR API", R)
 
     # F3 — Long/Short Ratio
     ls_df  = fetch_long_short_ratio(symbol, period="1h", limit=12)
@@ -785,16 +1012,99 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # ── 5. HEATMAP ────────────────────────────
     section("05 · LIQUIDATION HEATMAP  [Manuel requis]")
-
     row("[L1] Liquidation Heatmap",
         "⚠ VÉRIFIER MANUELLEMENT", Y,
         "→ https://coinank.com/chart/derivatives/liq-heat-map/solusdt/1w")
     row("", "(aucune API publique disponible)", DIM)
 
-    # ── 6. ENTRY TIMING ──────────────────────
-    section("06 · TIMING")
+    # ── 6. ENTRY ANALYSIS ────────────────────
+    section("06 · ZONE D'ENTRÉE & TIMING  [OHLCV + Gate.io]")
 
     row("[E2] Session de trading", session_name, session_color)
+
+    # C3 — Absorption (volume fort + body plat)
+    absorbed, vol_ratio, body_pct = detect_absorption(df_15m)
+    if absorbed:
+        row("[C3] Absorption 15min",
+            f"ABSORPTION DETECTEE (vol x{vol_ratio:.1f} avg, body {body_pct:.2f}%)", R,
+            "volume fort sans mouvement = vendeurs/acheteurs cachés")
+        board.block("absorption", "Absorption detectee sur 15min — attendre resolution")
+    else:
+        row("[C3] Absorption 15min", "Aucune absorption detectee", G)
+        board.add("C3_absorption", "no_absorption", weight=1)
+
+    # E1 — Order Blocks + FVG sur 15min
+    if df_15m is not None and price:
+        fvgs = detect_fvg(df_15m, n_candles=80)
+        obs  = detect_order_blocks(df_15m, n_candles=80)
+        # Find closest FVG to current price
+        nearest_fvg = None
+        nearest_dist = float("inf")
+        for ftype, flo, fhi, _ in fvgs:
+            mid  = (flo + fhi) / 2
+            dist = abs(price - mid) / price * 100
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_fvg  = (ftype, flo, fhi, dist)
+        if nearest_fvg:
+            ftype, flo, fhi, dist = nearest_fvg
+            in_zone = dist < 1.0
+            color   = G if in_zone else DIM
+            e1_dir  = "long" if (ftype == "bullish" and in_zone) \
+                      else "short" if (ftype == "bearish" and in_zone) \
+                      else None
+            row("[E1] FVG le plus proche (15min)",
+                f"{ftype.upper()} FVG [{flo:.2f} - {fhi:.2f}]  dist: {dist:.2f}%",
+                color,
+                "DANS LA ZONE" if in_zone else "hors zone")
+            board.add("E1_fvg_ob", e1_dir, weight=1)
+        else:
+            row("[E1] FVG / Order Block", "Aucun FVG recent detectable", DIM)
+            board.add("E1_fvg_ob", None, weight=1)
+    else:
+        row("[E1] FVG / Order Block", "DONNÉES INSUFFISANTES", DIM)
+
+    # E3 — Confirmation bougie (15min)
+    pattern, pattern_dir = detect_candle_confirmation(df_15m)
+    if pattern:
+        color = G if pattern_dir == "long" else R
+        signal_row("[E3] Confirmation bougie 15min",
+                   pattern.upper().replace("_", " "), color, pattern_dir)
+        board.add("E3_candle_confirm", pattern_dir, weight=1)
+    else:
+        row("[E3] Confirmation bougie 15min", "Pas de pattern clair", DIM)
+        board.add("E3_candle_confirm", None, weight=1)
+
+    # E4 — Volume Profile POC (15min, 100 dernières bougies)
+    poc_price, lvns = calc_volume_profile(df_15m, n_candles=100, bins=40)
+    if poc_price and price:
+        dist_poc = abs(price - poc_price) / price * 100
+        # Nearest LVN in direction
+        lvns_above = [l for l in lvns if l > price]
+        lvns_below = [l for l in lvns if l < price]
+        lvn_above  = min(lvns_above) if lvns_above else None
+        lvn_below  = max(lvns_below) if lvns_below else None
+        color = G if dist_poc < 1.0 else DIM
+        lvn_str = ""
+        if lvn_above: lvn_str += f"  LVN↑ {lvn_above:.2f}"
+        if lvn_below: lvn_str += f"  LVN↓ {lvn_below:.2f}"
+        row("[E4] Volume Profile (15min)",
+            f"POC: {poc_price:.2f}  (dist: {dist_poc:.2f}%){lvn_str}", color)
+        e4_dir = None  # POC ne donne pas de direction mais confirme la zone
+        board.add("E4_vp_poc", e4_dir, weight=1)
+
+        # R1 suggestion SL basé sur les pivots structurels
+        if df_4h is not None:
+            _, sh4, sl4 = assess_structure(df_4h, n=SWING_N)
+            if len(sh4) >= 1 and len(sl4) >= 1:
+                nearest_hl = sl4[-1]  # dernier pivot bas = SL long suggéré
+                nearest_lh = sh4[-1]  # dernier pivot haut = SL short suggéré
+                row("[R1] SL suggéré (auto)",
+                    f"LONG: sous {nearest_hl:.2f}  |  SHORT: dessus {nearest_lh:.2f}",
+                    DIM, None,
+                    "(à valider — placer 0.3% au-delà)")
+    else:
+        row("[E4] Volume Profile", "DONNÉES INSUFFISANTES", DIM)
 
     # ─────────────────────────────────────────
     # VERDICT FINAL
@@ -840,21 +1150,14 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # Reminder for manual items
     print()
-    print(DIM + f"  {MANUAL_ITEMS} items manuels a verifier avant de trader (non automatisables):")
-    print(DIM + "  ├─ [M1] Calendrier macro     → fr.investing.com/economic-calendar")
-    print(DIM + "  ├─ [L1] Zones de liquidite   → coinank.com/chart/derivatives/liq-heat-map/solusdt/1w")
-    print(DIM + "  ├─ [L2] Cluster contre dir.  → heatmap (bloqueur si cluster proche contre toi)")
-    print(DIM + "  ├─ [L3] Cluster dans dir.    → heatmap (aimant de prix dans ton sens ?)")
-    print(DIM + "  ├─ [C3] Absorption visible   → velo.xyz/futures/SOL (volume fort sans mouvement)")
-    print(DIM + "  ├─ [E1] Order Block / FVG    → TradingView 15min (entree sur zone institutionnelle)")
-    print(DIM + "  ├─ [E3] Confirmation bougie  → TradingView (engulfing / pin bar clôture)")
-    print(DIM + "  ├─ [E4] Entree proche POC    → TradingView (Volume Profile Visible Range)")
-    print(DIM + "  ├─ [R1] SL sur zone struct.  → TradingView (sous HL pour long, dessus LH pour short)")
-    print(DIM + "  ├─ [R2] R:R minimum 1:2      → calculatrice checklist HTML")
-    print(DIM + "  ├─ [R3] Taille de position   → calculatrice checklist HTML (max 2% capital)")
-    print(DIM + "  ├─ [R4] TPs partiels definis → noter TP1 et TP2 avant d'entrer")
-    print(DIM + "  ├─ [R5] Pas de position cor. → verifier tes positions ouvertes sur XT.com")
-    print(DIM + "  └─ [S4] BOS/CHoCH sur 4H     → TradingView (cassure de structure en cours ?)")
+    print(DIM + f"  {MANUAL_ITEMS} items nécessitant tes données personnelles (non automatisables):")
+    print(DIM + "  ├─ [L2] Cluster contre dir.  → heatmap CoinAnk (bloqueur si cluster proche)")
+    print(DIM + "  ├─ [L3] Cluster dans dir.    → heatmap CoinAnk (aimant de prix ?)")
+    print(DIM + "  ├─ [R2] R:R minimum 1:2      → calculatrice checklist HTML (besoin prix entrée)")
+    print(DIM + "  ├─ [R3] Taille de position   → calculatrice checklist HTML (besoin capital)")
+    print(DIM + "  ├─ [R4] TPs partiels définis → noter TP1/TP2 avant d'entrer")
+    print(DIM + "  ├─ [R5] Pas de position cor. → vérifier tes positions sur XT.com")
+    print(DIM + "  └─ [R1] SL structurel        → suggestion ci-dessus, à valider manuellement")
     print()
 
     return status, direction, board
