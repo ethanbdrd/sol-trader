@@ -909,27 +909,30 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         long_liqs  = sum(abs(float(l["size"])) for l in recent_liqs if float(l["size"]) > 0)
         short_liqs = sum(abs(float(l["size"])) for l in recent_liqs if float(l["size"]) < 0)
         total_liqs = long_liqs + short_liqs
-        if total_liqs == 0:
-            liq_hint  = "aucune liquidation significative (8h)"
+        # Seuil minimum : 500 contracts (~40 000$ à 80$/SOL) pour éviter les faux positifs
+        LIQ_MIN_THRESHOLD = 500
+        dominant = max(long_liqs, short_liqs)
+        if total_liqs == 0 or dominant < LIQ_MIN_THRESHOLD:
+            liq_hint  = f"aucune liquidation significative (8h, total: {total_liqs:.0f} contracts)"
             liq_color = G
             liq_dir   = "safe"
-        elif long_liqs > short_liqs * 2:
+        elif long_liqs > short_liqs * 2 and long_liqs >= LIQ_MIN_THRESHOLD:
             liq_hint  = f"pic LIQS LONGS ({long_liqs:.0f} contracts) — bottom local possible"
             liq_color = Y
             liq_dir   = None   # prudence short
-        elif short_liqs > long_liqs * 2:
+        elif short_liqs > long_liqs * 2 and short_liqs >= LIQ_MIN_THRESHOLD:
             liq_hint  = f"pic LIQS SHORTS ({short_liqs:.0f} contracts) — top local possible"
             liq_color = Y
             liq_dir   = None   # prudence long
         else:
-            liq_hint  = f"liqs équilibrées (L:{long_liqs:.0f} / S:{short_liqs:.0f})"
+            liq_hint  = f"liqs équilibrées (L:{long_liqs:.0f} / S:{short_liqs:.0f} contracts)"
             liq_color = DIM
             liq_dir   = "safe"
         row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
         board.add("F4_liquidations", None if liq_dir is None else None, weight=1)
         if liq_dir is None:
             board.block("recent_liquidation",
-                        f"Pic de liquidations recent — retournement potentiel")
+                        f"Pic de liquidations significatif — retournement potentiel")
     else:
         row("[F4] Liquidations récentes", "ERREUR API", R)
 
@@ -1075,6 +1078,14 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[E3] Confirmation bougie 15min", "Pas de pattern clair", DIM)
         board.add("E3_candle_confirm", None, weight=1)
 
+    # Détection contradiction E1 vs E3
+    e1_dir_val = next((d for n,d,_,_ in board.signals if n == "E1_fvg_ob"), None)
+    if (e1_dir_val and pattern_dir
+            and e1_dir_val != pattern_dir):
+        row("[!] Contradiction E1/E3",
+            f"FVG {e1_dir_val.upper()} vs bougie {pattern_dir.upper()} — signaux opposés",
+            Y, "prendre le signal E3 (bougie) comme confirmation prioritaire")
+
     # E4 — Volume Profile POC (15min, 100 dernières bougies)
     poc_price, lvns = calc_volume_profile(df_15m, n_candles=100, bins=40)
     if poc_price and price:
@@ -1094,15 +1105,39 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         board.add("E4_vp_poc", e4_dir, weight=1)
 
         # R1 suggestion SL basé sur les pivots structurels
-        if df_4h is not None:
+        if df_4h is not None and price:
             _, sh4, sl4 = assess_structure(df_4h, n=SWING_N)
-            if len(sh4) >= 1 and len(sl4) >= 1:
-                nearest_hl = sl4[-1]  # dernier pivot bas = SL long suggéré
-                nearest_lh = sh4[-1]  # dernier pivot haut = SL short suggéré
+            # SL long  = dernier swing low SOUS le prix actuel
+            sl_below = [v for v in sl4 if v < price]
+            # SL short = dernier swing high AU-DESSUS du prix actuel
+            sh_above = [v for v in sh4 if v > price]
+            if sl_below and sh_above:
+                nearest_hl = sl_below[-1]   # le plus récent sous le prix
+                nearest_lh = sh_above[-1]   # le plus récent au-dessus du prix
+                sl_long_dist  = (price - nearest_hl) / price * 100
+                sl_short_dist = (nearest_lh - price) / price * 100
                 row("[R1] SL suggéré (auto)",
-                    f"LONG: sous {nearest_hl:.2f}  |  SHORT: dessus {nearest_lh:.2f}",
+                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%)"
+                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%)",
                     DIM,
-                    "a valider — placer 0.3% au-dela")
+                    "a valider — placer 0.3% au-dela du niveau")
+            elif sl_below:
+                nearest_hl = sl_below[-1]
+                sl_long_dist = (price - nearest_hl) / price * 100
+                row("[R1] SL suggéré (auto)",
+                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%)"
+                    f"  |  SHORT: pas de pivot haut visible",
+                    DIM, "a valider")
+            elif sh_above:
+                nearest_lh = sh_above[-1]
+                sl_short_dist = (nearest_lh - price) / price * 100
+                row("[R1] SL suggéré (auto)",
+                    f"LONG: pas de pivot bas visible"
+                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%)",
+                    DIM, "a valider")
+            else:
+                row("[R1] SL suggéré (auto)",
+                    "Pas de pivot structurel identifiable — SL manuel requis", Y)
     else:
         row("[E4] Volume Profile", "DONNÉES INSUFFISANTES", DIM)
 
