@@ -1101,8 +1101,8 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                 nearest_lh = sh4[-1]  # dernier pivot haut = SL short suggéré
                 row("[R1] SL suggéré (auto)",
                     f"LONG: sous {nearest_hl:.2f}  |  SHORT: dessus {nearest_lh:.2f}",
-                    DIM, None,
-                    "(à valider — placer 0.3% au-delà)")
+                    DIM,
+                    "a valider — placer 0.3% au-dela")
     else:
         row("[E4] Volume Profile", "DONNÉES INSUFFISANTES", DIM)
 
