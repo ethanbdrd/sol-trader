@@ -634,8 +634,11 @@ class SignalBoard:
         long_pts  = sum(w for _, d, w, _ in self.signals if d == "long")
         short_pts = sum(w for _, d, w, _ in self.signals if d == "short")
         total     = long_pts + short_pts
-        # answered = automated items that produced a signal + manual items confirmed
-        answered  = sum(1 for _, d, _, _ in self.signals if d is not None)
+        # Neutral placeholders that don't carry directional info
+        NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe", "ok_no_event"}
+        # answered = items with a real directional signal (long/short) OR confirmed neutral
+        answered = sum(1 for _, d, _, _ in self.signals
+                       if d in ("long", "short") or d in NEUTRAL_VALUES)
         # total_items includes TOTAL_CHECKLIST_ITEMS so completion reflects
         # the full 27-item checklist, not just the automated subset
         completion = answered / TOTAL_CHECKLIST_ITEMS if TOTAL_CHECKLIST_ITEMS else 0
@@ -844,11 +847,14 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    color, dir_btc,
                    f"MA200={ma200_btc:,.2f}")
         board.add("M3_btc_bias", dir_btc, weight=1)
-        # M2 : BTC en tendance claire (non-ranging) — scoré comme neutre (checked ou non)
+        # M2 : BTC en tendance claire (non-ranging)
         btc_trending = struct_btc in ("bullish", "bearish")
-        m2_dir = dir_btc if btc_trending else None  # None si ranging = non coché
-        board.add("M2_btc_trending", m2_dir, weight=1,
-                  detail="BTC en tendance directionnelle")
+        m2_dir = dir_btc if btc_trending else None
+        m2_label = "TENDANCE CLAIRE" if btc_trending else "EN RANGE — signal non exploitable"
+        m2_color = (G if dir_btc == "long" else R if dir_btc == "short" else Y)
+        row("[M2] BTC en tendance", m2_label, m2_color,
+            "" if btc_trending else "attends une tendance BTC directionnelle")
+        board.add("M2_btc_trending", m2_dir, weight=1)
     else:
         row("[M3] Biais BTC", "ERREUR API", R)
 
@@ -916,23 +922,27 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             liq_hint  = f"aucune liquidation significative (8h, total: {total_liqs:.0f} contracts)"
             liq_color = G
             liq_dir   = "safe"
+            liq_block_reason = None
         elif long_liqs > short_liqs * 2 and long_liqs >= LIQ_MIN_THRESHOLD:
-            liq_hint  = f"pic LIQS LONGS ({long_liqs:.0f} contracts) — bottom local possible"
+            liq_hint  = f"pic LIQS LONGS ({long_liqs:.0f} contracts) — eviter SHORT ici (bottom possible)"
             liq_color = Y
-            liq_dir   = None   # prudence short
+            liq_dir   = None
+            liq_block_reason = f"Longs viennent d'etre liquides ({long_liqs:.0f} contracts) — ne pas shorter un potentiel bottom"
         elif short_liqs > long_liqs * 2 and short_liqs >= LIQ_MIN_THRESHOLD:
-            liq_hint  = f"pic LIQS SHORTS ({short_liqs:.0f} contracts) — top local possible"
+            liq_hint  = f"pic LIQS SHORTS ({short_liqs:.0f} contracts) — eviter LONG ici (top possible)"
             liq_color = Y
-            liq_dir   = None   # prudence long
+            liq_dir   = None
+            liq_block_reason = f"Shorts viennent d'etre liquides ({short_liqs:.0f} contracts) — ne pas longer un potentiel top"
         else:
-            liq_hint  = f"liqs équilibrées (L:{long_liqs:.0f} / S:{short_liqs:.0f} contracts)"
+            liq_hint  = f"liqs equilibrees (L:{long_liqs:.0f} / S:{short_liqs:.0f} contracts)"
             liq_color = DIM
             liq_dir   = "safe"
+            liq_block_reason = None
         row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
-        board.add("F4_liquidations", None if liq_dir is None else None, weight=1)
-        if liq_dir is None:
-            board.block("recent_liquidation",
-                        f"Pic de liquidations significatif — retournement potentiel")
+        # Score F4 : "safe" = signal neutre confirmé, None = pas de direction exploitable
+        board.add("F4_liquidations", None, weight=1)
+        if liq_dir is None and liq_block_reason:
+            board.block("recent_liquidation", liq_block_reason)
     else:
         row("[F4] Liquidations récentes", "ERREUR API", R)
 
@@ -1111,30 +1121,46 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             sl_below = [v for v in sl4 if v < price]
             # SL short = dernier swing high AU-DESSUS du prix actuel
             sh_above = [v for v in sh4 if v > price]
+
+            def sl_warning(dist_pct, direction):
+                """Retourne warning si SL trop proche de la liquidation x10."""
+                lev_impact = dist_pct * 10   # impact en % sur la position
+                if lev_impact >= 90:
+                    return f" !! TROP LARGE — liquidation x10 à {direction}10% (SL jamais atteint)"
+                elif lev_impact >= 70:
+                    return f" ! proche liquidation ({lev_impact:.0f}% de la position)"
+                return ""
+
             if sl_below and sh_above:
-                nearest_hl = sl_below[-1]   # le plus récent sous le prix
-                nearest_lh = sh_above[-1]   # le plus récent au-dessus du prix
+                nearest_hl    = sl_below[-1]
+                nearest_lh    = sh_above[-1]
                 sl_long_dist  = (price - nearest_hl) / price * 100
                 sl_short_dist = (nearest_lh - price) / price * 100
+                warn_long  = sl_warning(sl_long_dist,  "-")
+                warn_short = sl_warning(sl_short_dist, "+")
+                col = R if (warn_long and "TROP" in warn_long) or (warn_short and "TROP" in warn_short) else DIM
                 row("[R1] SL suggéré (auto)",
-                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%)"
-                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%)",
-                    DIM,
-                    "a valider — placer 0.3% au-dela du niveau")
+                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%){warn_long}"
+                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%){warn_short}",
+                    col, "a valider — placer 0.3% au-dela du niveau")
             elif sl_below:
-                nearest_hl = sl_below[-1]
+                nearest_hl   = sl_below[-1]
                 sl_long_dist = (price - nearest_hl) / price * 100
+                warn_long    = sl_warning(sl_long_dist, "-")
+                col = R if warn_long and "TROP" in warn_long else DIM
                 row("[R1] SL suggéré (auto)",
-                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%)"
+                    f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%){warn_long}"
                     f"  |  SHORT: pas de pivot haut visible",
-                    DIM, "a valider")
+                    col, "a valider")
             elif sh_above:
-                nearest_lh = sh_above[-1]
+                nearest_lh    = sh_above[-1]
                 sl_short_dist = (nearest_lh - price) / price * 100
+                warn_short    = sl_warning(sl_short_dist, "+")
+                col = R if warn_short and "TROP" in warn_short else DIM
                 row("[R1] SL suggéré (auto)",
                     f"LONG: pas de pivot bas visible"
-                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%)",
-                    DIM, "a valider")
+                    f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%){warn_short}",
+                    col, "a valider")
             else:
                 row("[R1] SL suggéré (auto)",
                     "Pas de pivot structurel identifiable — SL manuel requis", Y)
@@ -1148,7 +1174,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     status, direction, long_pts, short_pts, completion = board.score()
     total_pts    = long_pts + short_pts
-    auto_answered = sum(1 for _, d, _, _ in board.signals if d is not None)
+    NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe"}
+    auto_answered = sum(1 for _, d, _, _ in board.signals
+                        if d in ("long", "short") or d in NEUTRAL_VALUES)
 
     print(f"\n  {DIM}Points LONG   {G}{long_pts:>4} pts")
     print(f"  {DIM}Points SHORT  {R}{short_pts:>4} pts")
