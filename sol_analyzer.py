@@ -616,19 +616,38 @@ def assess_ls_ratio(ls_df, top_df=None):
 # ─────────────────────────────────────────────
 class SignalBoard:
     def __init__(self):
-        self.signals = []  # (name, direction, weight, detail)
-        self.blockers = [] # (name, reason)
+        self.signals  = []  # (name, direction, weight, detail)
+        self.blockers = []  # (name, reason, blocks_direction)
+        # blocks_direction: None = bloque tout, 'long' = bloque seulement long,
+        #                   'short' = bloque seulement short
 
     def add(self, name, direction, weight=1, detail=""):
         """direction: 'long', 'short', or None (neutral/unknown)"""
         self.signals.append((name, direction, weight, detail))
 
-    def block(self, name, reason=""):
-        self.blockers.append((name, reason))
+    def block(self, name, reason="", direction=None):
+        """direction=None bloque tout. 'long' ou 'short' bloque seulement ce sens."""
+        self.blockers.append((name, reason, direction))
 
     @property
     def is_blocked(self):
-        return len(self.blockers) > 0
+        """True si au moins un bloqueur global (direction=None)."""
+        return any(d is None for _, _, d in self.blockers)
+
+    def is_blocked_for(self, trade_dir):
+        """True si ce sens de trade est bloqué (bloqueur global ou bloqueur directionnel)."""
+        for _, _, d in self.blockers:
+            if d is None or d == trade_dir:
+                return True
+        return False
+
+    def directional_blockers(self):
+        """Retourne les bloqueurs directionnels (long ou short uniquement)."""
+        return [(n, r, d) for n, r, d in self.blockers if d is not None]
+
+    def global_blockers(self):
+        """Retourne les bloqueurs globaux (bloquent tout)."""
+        return [(n, r) for n, r, d in self.blockers if d is None]
 
     def score(self):
         long_pts  = sum(w for _, d, w, _ in self.signals if d == "long")
@@ -809,7 +828,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     section("02 · SESSION & MACRO")
 
     session_id, session_name, session_color = check_session()
-    row("[M2] Session actuelle", session_name, session_color)
+    row("[E2] Session de trading", session_name, session_color)
     if session_id == "asian":
         board.block("session", "Session asiatique — fakeouts fréquents")
     else:
@@ -942,7 +961,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         # Score F4 : "safe" = signal neutre confirmé, None = pas de direction exploitable
         board.add("F4_liquidations", None, weight=1)
         if liq_dir is None and liq_block_reason:
-            board.block("recent_liquidation", liq_block_reason)
+            # Bloque uniquement la direction risquée, pas l'opposée
+            blocked_dir = "short" if long_liqs > short_liqs else "long"
+            board.block("recent_liquidation", liq_block_reason, direction=blocked_dir)
     else:
         row("[F4] Liquidations récentes", "ERREUR API", R)
 
@@ -1032,8 +1053,6 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # ── 6. ENTRY ANALYSIS ────────────────────
     section("06 · ZONE D'ENTRÉE & TIMING  [OHLCV + Gate.io]")
-
-    row("[E2] Session de trading", session_name, session_color)
 
     # C3 — Absorption (volume fort + body plat)
     absorbed, vol_ratio, body_pct = detect_absorption(df_15m)
@@ -1185,10 +1204,28 @@ def run_analysis(symbol=SYMBOL, verbose=False):
           f"Completion  {W}{completion*100:.0f}%/{TOTAL_CHECKLIST_ITEMS} items")
 
     if board.is_blocked:
+        # Bloqueurs globaux présents — bloquent tout trading
         print()
-        for name, reason in board.blockers:
-            print(f"  {Back.RED}{Style.BRIGHT} BLOQUEUR {RST}  {R}{name}{DIM}: {reason}")
+        for name, reason, bdir in board.blockers:
+            if bdir is None:
+                print(f"  {Back.RED}{Style.BRIGHT} BLOQUEUR {RST}  {R}{name}{DIM}: {reason}")
+            else:
+                print(f"  {Back.RED}{Style.BRIGHT} BLOQUEUR {bdir.upper():<6}{RST}  {R}{name}{DIM}: {reason}")
         verdict_box("🚫  BLOQUEUR ACTIF — NE PAS TRADER", Fore.RED, Back.RED)
+
+    elif board.directional_blockers() and not board.is_blocked:
+        # Seulement des bloqueurs directionnels — l'autre sens reste envisageable
+        print()
+        for name, reason, bdir in board.directional_blockers():
+            print(f"  {Back.RED}{Style.BRIGHT} BLOQUEUR {bdir.upper():<6}{RST}  {R}{name}{DIM}: {reason}")
+        if direction and board.is_blocked_for(direction):
+            opposite = "LONG" if direction == "short" else "SHORT"
+            verdict_box(f"⚠  {direction.upper()} BLOQUÉ — {opposite} ENVISAGEABLE", Fore.YELLOW)
+        elif direction:
+            pts = long_pts if direction == "long" else short_pts
+            col = Fore.GREEN if direction == "long" else Fore.RED
+            arrow = "▲" if direction == "long" else "▼"
+            verdict_box(f"{arrow}  {direction.upper()} POSSIBLE  ({pts}/{total_pts} pts)", col)
 
     elif status == "go" and direction == "long":
         print()
@@ -1281,12 +1318,13 @@ def build_telegram_message(status: str, direction, board, price: float,
         "",
     ]
 
-    if board.is_blocked:
+    all_blockers = board.blockers  # list of (name, reason, direction)
+    if all_blockers:
         lines.append("== BLOQUEURS ==")
-        for name, reason in board.blockers:
-            # Truncate long reasons cleanly
-            r = reason[:120] + "..." if len(reason) > 120 else reason
-            lines.append(f"  ! {name}: {r}")
+        for name, reason, bdir in all_blockers:
+            r    = reason[:120] + "..." if len(reason) > 120 else reason
+            dlbl = f"[{bdir.upper()}] " if bdir else ""
+            lines.append(f"  ! {dlbl}{name}: {r}")
         lines.append("")
 
     actionable = [s for s in board.signals if s[1] is not None]
