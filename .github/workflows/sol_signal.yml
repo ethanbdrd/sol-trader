@@ -13,17 +13,22 @@ on:
         type: boolean
 
 env:
-  # Force Node.js 24 pour les actions — supprime les warnings de deprecation
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Permission d'écrire dans le repo pour persister le state file
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2
+        with:
+          # Récupère le dernier commit incluant le state file
+          fetch-depth: 1
 
       - name: Setup Python
         uses: actions/setup-python@v5.4.0
@@ -33,36 +38,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore signal state cache
-        uses: actions/cache@v4.2.3
-        with:
-          path: .sol_signal_state.json
-          key: sol-signal-state-${{ github.ref_name }}
-          restore-keys: sol-signal-state-
-
-      - name: Test API access
-        run: |
-          curl -s "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=SOL_USDT" | head -c 200
-          echo ""
-          curl -s "https://api.binance.com/api/v3/ping" | head -c 100
-          echo ""
-          curl -o /dev/null -s -w "Bybit: %{http_code}\n" "https://api.bybit.com/v5/market/tickers?category=linear&symbol=SOLUSDT"
-          curl -o /dev/null -s -w "Gate.io: %{http_code}\n" "https://api.gateio.ws/api/v4/futures/usdt/tickers?contract=SOL_USDT"
-
       - name: Run analyzer
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
-          python sol_analyzer.py --notify
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             python sol_analyzer.py --notify --force
+          else
+            python sol_analyzer.py --notify
           fi
 
-      - name: Save signal state cache
+      # Commit le state file dans le repo — garanti persistant entre tous les runs
+      - name: Persist signal state
         if: always()
-        uses: actions/cache@v4.2.3
-        with:
-          path: .sol_signal_state.json
-          key: sol-signal-state-${{ github.ref_name }}-${{ github.run_id }}
+        run: |
+          git config user.name  "sol-bot"
+          git config user.email "sol-bot@github-actions"
+          git add -f .sol_signal_state.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: update signal state [skip ci]"
+          git push 2>/dev/null || true

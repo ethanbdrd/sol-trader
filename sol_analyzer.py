@@ -71,9 +71,9 @@ AUTO_ITEMS   = 20   # automatisés par ce script
 MANUAL_ITEMS = 7    # nécessitent vraiment des données personnelles
 
 # Pivot detection: N candles each side to qualify as swing high/low
-SWING_N     = 3
-# Minimum number of swings to assess structure
-MIN_SWINGS  = 4
+# 2 sur Daily (délai ~4 jours), 3 sur 4H/15min (délai ~12-45 bougies)
+SWING_N      = 2
+SWING_N_FAST = 3   # pour 4H et 15min
 
 
 # ─────────────────────────────────────────────
@@ -754,7 +754,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # S3 — 4H structure
     if df_4h is not None:
-        struct_4h, sh_4h, sl_4h = assess_structure(df_4h, n=SWING_N)
+        struct_4h, sh_4h, sl_4h = assess_structure(df_4h, n=SWING_N_FAST)
         color = G if struct_4h == "bullish" else (R if struct_4h == "bearish" else Y)
         dir_4h = "long" if struct_4h == "bullish" else ("short" if struct_4h == "bearish" else None)
         signal_row("[S3] Structure 4H",
@@ -788,7 +788,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # S4 — BOS / CHoCH sur 4H  (item S4 dans la checklist HTML)
     if df_4h is not None:
-        sh4, sl4 = detect_swings(df_4h, n=SWING_N)
+        sh4, sl4 = detect_swings(df_4h, n=SWING_N_FAST)
         highs_idx = df_4h.index[sh4]
         lows_idx  = df_4h.index[sl4]
         bos_signal = None
@@ -1166,7 +1166,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
         # R1 suggestion SL basé sur les pivots structurels
         if df_4h is not None and price:
-            _, sh4, sl4 = assess_structure(df_4h, n=SWING_N)
+            _, sh4, sl4 = assess_structure(df_4h, n=SWING_N_FAST)
             # SL long  = dernier swing low SOUS le prix actuel
             sl_below = [v for v in sl4 if v < price]
             # SL short = dernier swing high AU-DESSUS du prix actuel
