@@ -588,9 +588,13 @@ def assess_oi(oi_df):
     oi_change    = (recent_oi.iloc[-1] - recent_oi.iloc[0]) / recent_oi.iloc[0] * 100
     oi_current   = oi_df["sumOpenInterestValue"].iloc[-1]
     oi_max       = oi_df["sumOpenInterestValue"].max()
+    oi_min       = oi_df["sumOpenInterestValue"].min()
+    # Percentile sur 14j — plus stable qu'un % du max ponctuel
     oi_pct_of_max = oi_current / oi_max * 100
+    # Percentile rank : quelle fraction des valeurs 14j est sous la valeur actuelle
+    oi_percentile = (oi_df["sumOpenInterestValue"] <= oi_current).mean() * 100
 
-    return oi_change, oi_current, oi_pct_of_max
+    return oi_change, oi_current, oi_pct_of_max, oi_percentile
 
 
 def assess_ls_ratio(ls_df, top_df=None):
@@ -901,27 +905,23 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     else:
         row("[F1] Funding Rate", "ERREUR API", R)
 
-    # F2 — Open Interest
-    oi_df = fetch_open_interest_history(symbol, period="1h", limit=48)
+    # F2 — Open Interest (fenêtre 14 jours pour un max de référence stable)
+    oi_df = fetch_open_interest_history(symbol, period="1h", limit=336)
     if oi_df is not None:
-        oi_change, oi_current, oi_pct_max = assess_oi(oi_df)
-        oi_m = oi_current / 1e6
-        color = (R if oi_pct_max >= 90
-                 else Y if oi_pct_max > 75
+        oi_change, oi_current, oi_pct_max, oi_percentile = assess_oi(oi_df)
+        oi_m      = oi_current / 1e6
+        is_extreme = oi_percentile >= 90
+        color = (R if oi_percentile >= 90
+                 else Y if oi_percentile >= 75
                  else G)
-        # OI directionnel : OI monte = confirme tendance en cours, OI baisse = affaiblit
-        # On mappe sur la direction dominante du board jusqu'ici
-        oi_dir = None
-        if oi_change > 1.0:    # OI monte > 1% sur 6h → confirme tendance
-            oi_dir = None      # directionnel mais on ne sait pas encore quel sens
         row("[F2] Open Interest",
-            f"${oi_m:.1f}M  (6h change: {oi_change:+.2f}%  |  {oi_pct_max:.0f}% du max)",
+            f"${oi_m:.1f}M  (6h: {oi_change:+.2f}%  |  percentile 14j: {oi_percentile:.0f}%)",
             color,
-            "⚠ EXTREME — flush probable" if oi_pct_max >= 90 else "")
-        board.add("F2_oi", oi_dir, weight=1)
-        if oi_pct_max >= 90:
+            "⚠ EXTREME 14j — flush probable" if is_extreme else "")
+        board.add("F2_oi", None, weight=1)
+        if is_extreme:
             board.block("oi_extreme",
-                        f"OI à {oi_pct_max:.0f}% de son max historique recent")
+                        f"OI au {oi_percentile:.0f}e percentile sur 14j — marche surexpose")
     else:
         row("[F2] Open Interest", "ERREUR API", R)
 
@@ -1119,9 +1119,10 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     poc_price, lvns = calc_volume_profile(df_15m, n_candles=100, bins=40)
     if poc_price and price:
         dist_poc = abs(price - poc_price) / price * 100
-        # Nearest LVN in direction
-        lvns_above = [l for l in lvns if l > price]
-        lvns_below = [l for l in lvns if l < price]
+        # Nearest LVN in direction — minimum 0.5% de distance pour être exploitable
+        min_dist = price * 0.005
+        lvns_above = [l for l in lvns if l > price + min_dist]
+        lvns_below = [l for l in lvns if l < price - min_dist]
         lvn_above  = min(lvns_above) if lvns_above else None
         lvn_below  = max(lvns_below) if lvns_below else None
         color = G if dist_poc < 1.0 else DIM
