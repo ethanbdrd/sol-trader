@@ -473,7 +473,11 @@ def detect_swings(df, n=SWING_N):
 def assess_structure(df, n=SWING_N):
     """
     Returns: 'bullish', 'bearish', 'ranging', or 'unclear'
-    Also returns list of recent swing highs/lows for display.
+    Logic:
+    - bullish : HH + HL (les deux)
+    - bearish : LH seuls suffisent si >= 3 pivots hauts décroissants (indicateur fort)
+                OU LH + LL
+    - ranging sinon
     """
     sh, sl = detect_swings(df, n)
     swing_highs = df["high"][sh].values[-6:]
@@ -482,21 +486,30 @@ def assess_structure(df, n=SWING_N):
     if len(swing_highs) < 2 or len(swing_lows) < 2:
         return "unclear", swing_highs, swing_lows
 
-    # Check last 3 pairs
-    def is_hh_hl(highs, lows):
-        hh = all(highs[i] > highs[i-1] for i in range(1, min(3, len(highs))))
-        hl = all(lows[i]  > lows[i-1]  for i in range(1, min(3, len(lows))))
-        return hh and hl
+    def is_decreasing(arr, count=3):
+        """True si les `count` dernières valeurs sont strictement décroissantes."""
+        n = min(count, len(arr))
+        return all(arr[i] < arr[i-1] for i in range(1, n))
 
-    def is_lh_ll(highs, lows):
-        lh = all(highs[i] < highs[i-1] for i in range(1, min(3, len(highs))))
-        ll = all(lows[i]  < lows[i-1]  for i in range(1, min(3, len(lows))))
-        return lh and ll
+    def is_increasing(arr, count=3):
+        n = min(count, len(arr))
+        return all(arr[i] > arr[i-1] for i in range(1, n))
 
-    if is_hh_hl(swing_highs, swing_lows):
+    lh = is_decreasing(swing_highs)
+    ll = is_decreasing(swing_lows)
+    hh = is_increasing(swing_highs)
+    hl = is_increasing(swing_lows)
+
+    if hh and hl:
         return "bullish", swing_highs, swing_lows
-    elif is_lh_ll(swing_highs, swing_lows):
+    elif lh and ll:
         return "bearish", swing_highs, swing_lows
+    elif lh and len(swing_highs) >= 3:
+        # LH seuls avec 3+ pivots = bearish confirmé même si les bas sont ambigus
+        return "bearish", swing_highs, swing_lows
+    elif hh and len(swing_highs) >= 3:
+        # HH seuls avec 3+ pivots = bullish probable
+        return "bullish", swing_highs, swing_lows
     else:
         return "ranging", swing_highs, swing_lows
 
@@ -919,13 +932,16 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         oi_change, oi_current, oi_pct_max, oi_percentile = assess_oi(oi_df)
         oi_m      = oi_current / 1e6
         is_extreme = oi_percentile >= 90
-        color = (R if oi_percentile >= 90
-                 else Y if oi_percentile >= 75
+        is_very_low = oi_percentile <= 10
+        color = (R if is_extreme
+                 else Y if oi_percentile >= 75 or is_very_low
                  else G)
+        oi_note = ("⚠ EXTREME 14j — flush probable" if is_extreme
+                   else "⚠ TRES BAS 14j — volatilite imminente possible" if is_very_low
+                   else "")
         row("[F2] Open Interest",
             f"${oi_m:.1f}M  (6h: {oi_change:+.2f}%  |  percentile 14j: {oi_percentile:.0f}%)",
-            color,
-            "⚠ EXTREME 14j — flush probable" if is_extreme else "")
+            color, oi_note)
         board.add("F2_oi", None, weight=1)
         if is_extreme:
             board.block("oi_extreme",
@@ -1031,8 +1047,16 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    f"CVD={cvd_val:+.0f} contracts  |  buy%={buy_ratio:.1f}%  |  sell%={100-buy_ratio:.1f}%")
         board.add("C1_cvd", cvd_dir, weight=1)
         if "divergence" in cvd_status:
+            # Divergence bearish (prix monte + CVD baisse) → bloque le LONG
+            # Divergence bullish (prix baisse + CVD monte) → bloque le SHORT
+            blocked_dir = "long"  if cvd_status == "divergence_bearish" else "short"
+            reason_map  = {
+                "divergence_bearish": "Prix monte mais pas d'acheteurs reels — long non confirme",
+                "divergence_bullish": "Prix baisse mais acheteurs absorbent — short risque"
+            }
             board.block("cvd_divergence",
-                        f"Divergence CVD ({cvd_status}) — signal annule")
+                        reason_map.get(cvd_status, f"Divergence CVD ({cvd_status})"),
+                        direction=blocked_dir)
     else:
         row("[C1] CVD", "ERREUR API", R)
 
@@ -1297,29 +1321,30 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 # ─────────────────────────────────────────────
 # TELEGRAM
 # ─────────────────────────────────────────────
-def send_telegram(text: str) -> bool:
-    """Envoie un message Telegram en texte brut. Retourne True si OK."""
+def send_telegram(text: str, retries: int = 3) -> bool:
+    """Envoie un message Telegram en texte brut. Retente jusqu'à `retries` fois."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(Y + "  [TELEGRAM] Token ou chat_id manquant — notif ignoree." + RST)
-        print(DIM + "  Exporte TELEGRAM_TOKEN et TELEGRAM_CHAT_ID." + RST)
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    # Pas de parse_mode — texte brut, zero risque de 400 Bad Request
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text":    text,
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=TIMEOUT)
-        if not r.ok:
-            # Log le body pour debugger facilement
-            print(R + f"  [TELEGRAM] Erreur {r.status_code}: {r.text[:300]}" + RST)
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, json=payload, timeout=15)
+            if not r.ok:
+                print(R + f"  [TELEGRAM] Erreur {r.status_code}: {r.text[:200]}" + RST)
+                return False
+            print(G + "  [TELEGRAM] Notification envoyee." + RST)
+            return True
+        except requests.exceptions.Timeout:
+            print(Y + f"  [TELEGRAM] Timeout (tentative {attempt}/{retries})" + RST)
+            if attempt < retries:
+                time.sleep(3 * attempt)
+        except requests.exceptions.RequestException as e:
+            print(R + f"  [TELEGRAM] Erreur reseau : {e}" + RST)
             return False
-        print(G + "  [TELEGRAM] Notification envoyee." + RST)
-        return True
-    except requests.exceptions.RequestException as e:
-        print(R + f"  [TELEGRAM] Erreur reseau : {e}" + RST)
-        return False
+    print(R + "  [TELEGRAM] Echec apres toutes les tentatives." + RST)
+    return False
 
 
 def build_telegram_message(status: str, direction, board, price: float,
