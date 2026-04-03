@@ -792,7 +792,15 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         highs_idx = df_4h.index[sh4]
         lows_idx  = df_4h.index[sl4]
         bos_signal = None
-        bos_label  = "structure intacte"
+        # Label contextuel selon la structure globale
+        if struct_4h == "ranging":
+            bos_label = "RANGING 4H — pas de BOS récent"
+        elif struct_4h == "bullish":
+            bos_label = "structure haussière intacte"
+        elif struct_4h == "bearish":
+            bos_label = "structure baissière intacte"
+        else:
+            bos_label = "structure indéfinie"
         if len(highs_idx) >= 2 and len(lows_idx) >= 2:
             last_high  = df_4h.loc[highs_idx[-1], "high"]
             prev_high  = df_4h.loc[highs_idx[-2], "high"]
@@ -1070,7 +1078,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         fvgs = detect_fvg(df_15m, n_candles=80)
         obs  = detect_order_blocks(df_15m, n_candles=80)
         # Find closest FVG to current price
-        nearest_fvg = None
+        nearest_fvg  = None
         nearest_dist = float("inf")
         for ftype, flo, fhi, _ in fvgs:
             mid  = (flo + fhi) / 2
@@ -1080,15 +1088,37 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                 nearest_fvg  = (ftype, flo, fhi, dist)
         if nearest_fvg:
             ftype, flo, fhi, dist = nearest_fvg
-            in_zone = dist < 1.0
-            color   = G if in_zone else DIM
-            e1_dir  = "long" if (ftype == "bullish" and in_zone) \
-                      else "short" if (ftype == "bearish" and in_zone) \
-                      else None
+            # Prix réellement à l'intérieur du FVG
+            strictly_in = flo <= price <= fhi
+            # Prix proche mais pas encore dans le FVG (en approche)
+            approaching = not strictly_in and dist < 0.8
+            # FVG déjà comblé : bullish FVG comblé si prix > fhi, bearish si prix < flo
+            filled = (ftype == "bullish" and price > fhi) or \
+                     (ftype == "bearish" and price < flo)
+
+            if strictly_in:
+                zone_label = "DANS LA ZONE"
+                in_zone = True
+                color   = G
+            elif approaching and not filled:
+                zone_label = f"EN APPROCHE ({dist:.2f}%)"
+                in_zone = True   # encore exploitable
+                color   = Y
+            elif filled:
+                zone_label = f"COMBLÉ — prix {'au-dessus' if ftype=='bullish' else 'en dessous'}"
+                in_zone = False
+                color   = DIM
+            else:
+                zone_label = f"hors zone ({dist:.2f}%)"
+                in_zone = False
+                color   = DIM
+
+            e1_dir = "long"  if (ftype == "bullish" and in_zone) \
+                else "short" if (ftype == "bearish" and in_zone) \
+                else None
             row("[E1] FVG le plus proche (15min)",
                 f"{ftype.upper()} FVG [{flo:.2f} - {fhi:.2f}]  dist: {dist:.2f}%",
-                color,
-                "DANS LA ZONE" if in_zone else "hors zone")
+                color, zone_label)
             board.add("E1_fvg_ob", e1_dir, weight=1)
         else:
             row("[E1] FVG / Order Block", "Aucun FVG recent detectable", DIM)
@@ -1366,10 +1396,28 @@ def save_state(state: dict):
         print(Y + f"  [STATE] Impossible d'écrire {STATE_FILE}: {e}" + RST)
 
 
-def signal_changed(new_status: str, new_direction, old_state: dict) -> bool:
-    """Retourne True si le signal a changé depuis la dernière notification."""
-    return (old_state.get("status") != new_status or
-            old_state.get("direction") != new_direction)
+def signal_changed(new_status: str, new_direction, old_state: dict,
+                   board=None) -> bool:
+    """
+    Retourne True si le signal a changé depuis la dernière notification.
+    Compare status, direction ET les bloqueurs actifs (pour éviter
+    les doublons quand seul le status 'blocked' persiste mais que
+    les bloqueurs changent — ex: oi_extreme remplacé par cvd_divergence).
+    """
+    if old_state.get("status") != new_status:
+        return True
+    if old_state.get("direction") != new_direction:
+        return True
+    # Si le state est vide (cache miss GitHub Actions), on considère comme changé
+    if not old_state:
+        return True
+    # Compare le fingerprint des bloqueurs actifs
+    if board is not None:
+        new_blockers = frozenset(n for n, _, _ in board.blockers)
+        old_blockers = frozenset(old_state.get("blockers", []))
+        if new_blockers != old_blockers:
+            return True
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -1416,7 +1464,7 @@ if __name__ == "__main__":
             should_notify = (
                 args.force
                 or (effective_status in NOTIFY_ON_STATUSES
-                    and signal_changed(effective_status, direction, old_state))
+                    and signal_changed(effective_status, direction, old_state, board))
             )
 
             if should_notify:
@@ -1431,6 +1479,7 @@ if __name__ == "__main__":
                         "direction": direction,
                         "price":     price,
                         "timestamp": now_str,
+                        "blockers":  [n for n, _, _ in board.blockers],
                     })
             else:
                 if effective_status not in NOTIFY_ON_STATUSES:
