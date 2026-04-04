@@ -61,7 +61,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 STATE_FILE = ".sol_signal_state.json"
 
 # Statuts qui declenchent une notification Telegram
-NOTIFY_ON_STATUSES = {"go", "blocked"}
+NOTIFY_ON_STATUSES = {"go", "blocked", "directional_blocked", "possible"}
 
 # Total items dans la checklist HTML (27)
 # Le script en automatise 13 — les 14 restants sont manuels
@@ -902,8 +902,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         # M2 : BTC en tendance claire (non-ranging)
         btc_trending = struct_btc in ("bullish", "bearish")
         m2_dir = dir_btc if btc_trending else None
-        m2_label = "TENDANCE CLAIRE" if btc_trending else "EN RANGE — signal non exploitable"
-        m2_color = (G if dir_btc == "long" else R if dir_btc == "short" else Y)
+        m2_dir_str = f" {'▲ LONG' if dir_btc == 'long' else '▼ SHORT'}" if btc_trending and dir_btc else ""
+        m2_label   = f"TENDANCE CLAIRE{m2_dir_str}" if btc_trending else "EN RANGE — signal non exploitable"
+        m2_color   = (G if dir_btc == "long" else R if dir_btc == "short" else Y)
         row("[M2] BTC en tendance", m2_label, m2_color,
             "" if btc_trending else "attends une tendance BTC directionnelle")
         board.add("M2_btc_trending", m2_dir, weight=1)
@@ -1225,6 +1226,15 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                     f"LONG: sous {nearest_hl:.2f} (-{sl_long_dist:.1f}%){warn_long}"
                     f"  |  SHORT: dessus {nearest_lh:.2f} (+{sl_short_dist:.1f}%){warn_short}",
                     col, "a valider — placer 0.3% au-dela du niveau")
+                # Bloquer directionnellement si SL trop serré (< 1%)
+                if sl_long_dist < 1.0:
+                    board.block("sl_trop_serre_long",
+                                f"SL long à {sl_long_dist:.1f}% — trop serré pour x10",
+                                direction="long")
+                if sl_short_dist < 1.0:
+                    board.block("sl_trop_serre_short",
+                                f"SL short à {sl_short_dist:.1f}% — trop serré pour x10",
+                                direction="short")
             elif sl_below:
                 nearest_hl   = sl_below[-1]
                 sl_long_dist = (price - nearest_hl) / price * 100
@@ -1277,18 +1287,23 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         verdict_box("🚫  BLOQUEUR ACTIF — NE PAS TRADER", Fore.RED, Back.RED)
 
     elif board.directional_blockers() and not board.is_blocked:
-        # Seulement des bloqueurs directionnels — l'autre sens reste envisageable
+        # Bloqueurs directionnels — afficher d'abord les bloqueurs
         print()
         for name, reason, bdir in board.directional_blockers():
             print(f"  {Back.RED}{Style.BRIGHT} BLOQUEUR {bdir.upper():<6}{RST}  {R}{name}{DIM}: {reason}")
-        if direction and board.is_blocked_for(direction):
+
+        # Ne montrer le verdict directionnel QUE si completion suffisante
+        if completion < 0.55:
+            verdict_box("—  ANALYSE INCOMPLÈTE — ATTENDRE", Fore.WHITE)
+        elif direction and board.is_blocked_for(direction):
             opposite = "LONG" if direction == "short" else "SHORT"
             verdict_box(f"⚠  {direction.upper()} BLOQUÉ — {opposite} ENVISAGEABLE", Fore.YELLOW)
         elif direction:
             pts = long_pts if direction == "long" else short_pts
             col = Fore.GREEN if direction == "long" else Fore.RED
             arrow = "▲" if direction == "long" else "▼"
-            verdict_box(f"{arrow}  {direction.upper()} POSSIBLE  ({pts}/{total_pts} pts)", col)
+            label = "TRADE OK" if completion >= 0.80 else "POSSIBLE — COMPLÉTER"
+            verdict_box(f"{arrow}  {direction.upper()} {label}  ({pts}/{total_pts} pts)", col)
 
     elif status == "go" and direction == "long":
         print()
@@ -1491,8 +1506,13 @@ if __name__ == "__main__":
             long_pts   = sum(w for _, d, w, _ in board.signals if d == "long")
             short_pts  = sum(w for _, d, w, _ in board.signals if d == "short")
 
-            # Statut "blocked" si des bloqueurs sont actifs, sinon on utilise status
-            effective_status = "blocked" if board.is_blocked else status
+            # Statut effectif : blocked > directional_blocked > status du score
+            if board.is_blocked:
+                effective_status = "blocked"
+            elif board.directional_blockers() and completion >= 0.55:
+                effective_status = "directional_blocked"
+            else:
+                effective_status = status
 
             should_notify = (
                 args.force
