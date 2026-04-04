@@ -272,13 +272,20 @@ def fetch_liquidations(symbol, limit=100):
     Gate.io recent liquidation orders.
     GET /futures/usdt/liq_orders?contract=SOL_USDT
     Returns list of {time, contract, size (+ = long liq, - = short liq), price}
+    Falls back to empty list on error rather than None (avoids ERREUR API display).
     """
     contract = _gate_contract(symbol)
-    data = get(f"{GATE_BASE}/futures/usdt/liq_orders",
-               {"contract": contract, "limit": limit})
-    if not data:
-        return None
-    return data
+    try:
+        data = get(f"{GATE_BASE}/futures/usdt/liq_orders",
+                   {"contract": contract, "limit": limit})
+        if not data:
+            return []
+        # Gate.io sometimes wraps in {"data": [...]} — handle both
+        if isinstance(data, dict):
+            return data.get("data", data.get("result", []))
+        return data
+    except Exception:
+        return []
 
 
 def fetch_macro_calendar():
@@ -487,13 +494,14 @@ def assess_structure(df, n=SWING_N):
         return "unclear", swing_highs, swing_lows
 
     def is_decreasing(arr, count=3):
-        """True si les `count` dernières valeurs sont strictement décroissantes."""
-        n = min(count, len(arr))
-        return all(arr[i] < arr[i-1] for i in range(1, n))
+        """True si les `count` DERNIÈRES valeurs sont strictement décroissantes."""
+        tail = arr[-count:] if len(arr) >= count else arr
+        return len(tail) >= 2 and all(tail[i] < tail[i-1] for i in range(1, len(tail)))
 
     def is_increasing(arr, count=3):
-        n = min(count, len(arr))
-        return all(arr[i] > arr[i-1] for i in range(1, n))
+        """True si les `count` DERNIÈRES valeurs sont strictement croissantes."""
+        tail = arr[-count:] if len(arr) >= count else arr
+        return len(tail) >= 2 and all(tail[i] > tail[i-1] for i in range(1, len(tail)))
 
     lh = is_decreasing(swing_highs)
     ll = is_decreasing(swing_lows)
@@ -951,7 +959,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     # F4 — Liquidations récentes (Gate.io /liq_orders — données réelles)
     liq_data = fetch_liquidations(symbol, limit=100)
-    if liq_data:
+    if liq_data is None:
+        row("[F4] Liquidations récentes", "ERREUR API", R)
+    else:
         now_ts   = datetime.now(timezone.utc).timestamp()
         cutoff   = now_ts - 8 * 3600   # dernières 8h
         recent_liqs = [l for l in liq_data if int(l.get("time", 0)) >= cutoff]
@@ -982,14 +992,10 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             liq_dir   = "safe"
             liq_block_reason = None
         row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
-        # Score F4 : "safe" = signal neutre confirmé, None = pas de direction exploitable
         board.add("F4_liquidations", None, weight=1)
         if liq_dir is None and liq_block_reason:
-            # Bloque uniquement la direction risquée, pas l'opposée
             blocked_dir = "short" if long_liqs > short_liqs else "long"
             board.block("recent_liquidation", liq_block_reason, direction=blocked_dir)
-    else:
-        row("[F4] Liquidations récentes", "ERREUR API", R)
 
     # F3 — Long/Short Ratio
     ls_df  = fetch_long_short_ratio(symbol, period="1h", limit=12)
@@ -1197,9 +1203,11 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             sh_above = [v for v in sh4 if v > price]
 
             def sl_warning(dist_pct, direction):
-                """Retourne warning si SL trop proche de la liquidation x10."""
-                lev_impact = dist_pct * 10   # impact en % sur la position
-                if lev_impact >= 90:
+                """Retourne warning si SL trop proche de la liquidation ou trop serré."""
+                lev_impact = dist_pct * 10
+                if dist_pct < 1.0:
+                    return f" !! TROP SERRÉ ({dist_pct:.1f}%) — bruit de marché suffisant pour déclencher"
+                elif lev_impact >= 90:
                     return f" !! TROP LARGE — liquidation x10 à {direction}10% (SL jamais atteint)"
                 elif lev_impact >= 70:
                     return f" ! proche liquidation ({lev_impact:.0f}% de la position)"
