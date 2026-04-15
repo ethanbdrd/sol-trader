@@ -1,9 +1,9 @@
 {
   "status": "blocked",
-  "direction": null,
-  "price": 84.06,
-  "timestamp": "2026-04-15 14:48 UTC",
+  "direction": "short",
+  "price": 84.75,
+  "timestamp": "2026-04-15 21:58 UTC",
   "blockers": [
-    "choch_4h"
+    "session"
   ]
 }
