@@ -1,9 +1,9 @@
 {
   "status": "blocked",
-  "direction": null,
-  "price": 88.91,
-  "timestamp": "2026-04-16 21:53 UTC",
+  "direction": "short",
+  "price": 88.69,
+  "timestamp": "2026-04-17 08:49 UTC",
   "blockers": [
-    "session"
+    "oi_extreme"
   ]
 }
