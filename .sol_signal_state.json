@@ -1,10 +1,10 @@
 {
   "status": "blocked",
   "direction": null,
-  "price": 85.16,
-  "timestamp": "2026-04-19 21:46 UTC",
+  "price": 85.77,
+  "timestamp": "2026-04-20 21:55 UTC",
   "blockers": [
     "session",
-    "sl_trop_serre_long"
+    "cvd_divergence"
   ]
 }
