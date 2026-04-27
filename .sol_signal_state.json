@@ -1,11 +1,9 @@
 {
   "status": "blocked",
   "direction": "short",
-  "price": 86.3,
-  "timestamp": "2026-04-26 21:49 UTC",
+  "price": 84.2,
+  "timestamp": "2026-04-27 22:01 UTC",
   "blockers": [
-    "session",
-    "sl_trop_serre_long",
-    "sl_trop_serre_short"
+    "session"
   ]
 }
