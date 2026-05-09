@@ -1,10 +1,10 @@
 {
   "status": "blocked",
-  "direction": null,
-  "price": 93.7,
-  "timestamp": "2026-05-09 08:46 UTC",
+  "direction": "short",
+  "price": 93.08,
+  "timestamp": "2026-05-09 17:56 UTC",
   "blockers": [
-    "oi_extreme",
-    "cvd_divergence"
+    "choch_4h",
+    "oi_extreme"
   ]
 }
