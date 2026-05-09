@@ -1,10 +1,13 @@
 {
   "status": "blocked",
   "direction": "short",
-  "price": 93.08,
-  "timestamp": "2026-05-09 17:56 UTC",
+  "price": 93.37,
+  "timestamp": "2026-05-09 21:55 UTC",
   "blockers": [
     "choch_4h",
-    "oi_extreme"
+    "session",
+    "oi_extreme",
+    "cvd_divergence",
+    "sl_trop_serre_short"
   ]
 }
