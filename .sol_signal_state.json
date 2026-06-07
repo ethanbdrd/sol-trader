@@ -1,10 +1,11 @@
 {
   "status": "blocked",
   "direction": "short",
-  "price": 64.55,
-  "timestamp": "2026-06-05 22:20 UTC",
+  "price": 65.36,
+  "timestamp": "2026-06-07 22:12 UTC",
   "blockers": [
     "session",
+    "recent_liquidation",
     "cvd_divergence"
   ]
 }
