@@ -1,9 +1,10 @@
 {
   "status": "blocked",
   "direction": "short",
-  "price": 66.98,
-  "timestamp": "2026-06-25 22:26 UTC",
+  "price": 70.72,
+  "timestamp": "2026-06-27 22:10 UTC",
   "blockers": [
-    "session"
+    "session",
+    "cvd_divergence"
   ]
 }
