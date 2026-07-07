@@ -1,11 +1,11 @@
 {
   "status": "blocked",
-  "direction": null,
-  "price": 82.57,
-  "timestamp": "2026-07-06 22:20 UTC",
+  "direction": "short",
+  "price": 80.87,
+  "timestamp": "2026-07-07 22:17 UTC",
   "blockers": [
     "session",
-    "oi_extreme",
-    "cvd_divergence"
+    "cvd_divergence",
+    "sl_trop_serre_long"
   ]
 }
