@@ -178,26 +178,31 @@ def fetch_ohlcv(symbol, interval, limit=500):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["open_time"] = pd.to_datetime(df["open_time"], unit="s", utc=True)
     df = df.sort_values("open_time").set_index("open_time")
-    df["taker_buy_quote"] = df["quote_vol"] * 0.5  # neutral fallback for CVD proxy
     return df
 
 
-def fetch_trades_cvd(symbol, limit=1000):
+def fetch_taker_flow(symbol, interval="1h", limit=6):
     """
-    Gate.io recent trades for CVD.
-    GET /futures/usdt/trades?contract=SOL_USDT&limit=1000
-    Each trade: {size (+ = buy, - = sell), price, ...}
+    Volumes taker par période depuis contract_stats.
+    long_taker_size / short_taker_size = volume taker acheteur / vendeur
+    (contrats) PAR période — vérifié : lsr_taker == long/short exactement,
+    valeurs non monotones donc bien par période, pas cumulées.
+    mark_price permet de comparer flux et prix sur la MÊME fenêtre.
     """
     contract = _gate_contract(symbol)
-    data = get(f"{GATE_BASE}/futures/usdt/trades",
-               {"contract": contract, "limit": min(limit, 1000)})
+    data = get(f"{GATE_BASE}/futures/usdt/contract_stats",
+               {"contract": contract, "interval": interval, "limit": limit})
     if not data:
         return None
-    buy_vol  = sum(float(t["size"]) for t in data if float(t["size"]) > 0)
-    sell_vol = sum(abs(float(t["size"])) for t in data if float(t["size"]) < 0)
-    cvd = buy_vol - sell_vol
-    direction = "bullish" if cvd > 0 else "bearish"
-    return cvd, direction, buy_vol, sell_vol
+    df = pd.DataFrame(data)
+    for col in ("long_taker_size", "short_taker_size", "mark_price"):
+        if col not in df.columns:
+            return None
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    df = df.sort_values("timestamp")
+    df["delta"] = df["long_taker_size"] - df["short_taker_size"]
+    return df
 
 
 def fetch_funding_rate(symbol):
@@ -535,38 +540,47 @@ def assess_structure(df, n=SWING_N):
         return "ranging", swing_highs, swing_lows
 
 
-def calc_cvd(trades):
+def assess_taker_flow(flow_df, min_buy_share_dev=0.02, min_price_move_pct=0.3):
     """
-    CVD from aggTrades.
-    m=True  → buyer is maker → aggressive SELL → negative delta
-    m=False → buyer is taker → aggressive BUY  → positive delta
-    Returns: (cvd_total, cvd_direction, buy_vol, sell_vol)
+    Compare le flux taker cumulé et le mouvement de prix sur la MÊME fenêtre.
+    min_buy_share_dev : écart minimal de la part acheteuse vs 50% pour
+    considérer le flux directionnel (0.02 → buy >= 52% ou <= 48%).
+    min_price_move_pct : en-dessous, le prix est considéré plat.
+    Returns: (status, direction, cvd, buy_share, price_chg_pct)
+    status: aligned_bullish / aligned_bearish / divergence_bearish /
+            divergence_bullish / flow_neutral / price_flat / unclear
     """
-    buy_vol  = sum(float(t["q"]) for t in trades if not t["m"])
-    sell_vol = sum(float(t["q"]) for t in trades if t["m"])
-    cvd = buy_vol - sell_vol
-    direction = "bullish" if cvd > 0 else "bearish"
-    return cvd, direction, buy_vol, sell_vol
+    if flow_df is None or len(flow_df) < 2:
+        return "unclear", None, 0.0, 0.5, 0.0
+    buy   = flow_df["long_taker_size"].sum()
+    sell  = flow_df["short_taker_size"].sum()
+    total = buy + sell
+    if not total or pd.isna(total):
+        return "unclear", None, 0.0, 0.5, 0.0
+    cvd = buy - sell
+    buy_share = buy / total
+    p0, p1 = flow_df["mark_price"].iloc[0], flow_df["mark_price"].iloc[-1]
+    if not p0 or pd.isna(p0) or pd.isna(p1):
+        return "unclear", None, cvd, buy_share, 0.0
+    price_chg = (p1 - p0) / p0 * 100
 
+    flow_dir = ("bullish" if buy_share >= 0.5 + min_buy_share_dev
+                else "bearish" if buy_share <= 0.5 - min_buy_share_dev
+                else None)
+    price_dir = ("up" if price_chg >= min_price_move_pct
+                 else "down" if price_chg <= -min_price_move_pct
+                 else None)
 
-def calc_cvd_divergence(df_price, trades):
-    """
-    Check if CVD diverges from price over the last N trades window.
-    Compares price direction (last close vs N-candles ago) with CVD direction.
-    Returns: 'aligned', 'divergence_bearish', 'divergence_bullish'
-    """
-    price_change = df_price["close"].iloc[-1] - df_price["close"].iloc[-20]
-    cvd, direction, buy_vol, sell_vol = calc_cvd(trades)
-
-    if price_change > 0 and direction == "bullish":
-        return "aligned_bullish", cvd
-    elif price_change < 0 and direction == "bearish":
-        return "aligned_bearish", cvd
-    elif price_change > 0 and direction == "bearish":
-        return "divergence_bearish", cvd  # price up, CVD down = bearish divergence
-    elif price_change < 0 and direction == "bullish":
-        return "divergence_bullish", cvd  # price down, CVD up = bullish divergence
-    return "unclear", cvd
+    if flow_dir is None:
+        return "flow_neutral", None, cvd, buy_share, price_chg
+    if price_dir is None:
+        # Prix plat + flux directionnel = accumulation/distribution → biais léger
+        return "price_flat", ("long" if flow_dir == "bullish" else "short"), cvd, buy_share, price_chg
+    if (price_dir == "up") == (flow_dir == "bullish"):
+        status = "aligned_bullish" if flow_dir == "bullish" else "aligned_bearish"
+        return status, ("long" if flow_dir == "bullish" else "short"), cvd, buy_share, price_chg
+    status = "divergence_bearish" if price_dir == "up" else "divergence_bullish"
+    return status, None, cvd, buy_share, price_chg
 
 
 def check_session():
@@ -1028,66 +1042,53 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[F3] Ratio Long/Short", "ERREUR API", R)
 
     # ── 4. CVD ────────────────────────────────
-    section("04 · CVD — PRESSION D'ACHAT  [Gate.io recent-trade]")
+    section("04 · CVD — PRESSION D'ACHAT  [Gate.io taker flow]")
 
-    trades_result = fetch_trades_cvd(symbol, limit=1000)
-    if trades_result:
-        cvd_val, cvd_direction, buy_vol, sell_vol = trades_result
-        # Compare price direction with CVD direction
-        price_change = 0
-        if df_15m is not None and len(df_15m) >= 20:
-            price_change = df_15m["close"].iloc[-1] - df_15m["close"].iloc[-20]
-
-        if price_change > 0 and cvd_direction == "bullish":
-            cvd_status = "aligned_bullish"
-        elif price_change < 0 and cvd_direction == "bearish":
-            cvd_status = "aligned_bearish"
-        elif price_change > 0 and cvd_direction == "bearish":
-            cvd_status = "divergence_bearish"
-        elif price_change < 0 and cvd_direction == "bullish":
-            cvd_status = "divergence_bullish"
-        else:
-            cvd_status = "unclear"
-
-        cvd_dir = (
-            "long"  if cvd_status == "aligned_bullish"
-            else "short" if cvd_status == "aligned_bearish"
-            else None
-        )
-        color = (G if "bullish" in cvd_status
-                 else R if "bearish" in cvd_status
+    # C1 — Flux taker 6h (données réelles par heure, fenêtre alignée avec le prix)
+    flow_6h = fetch_taker_flow(symbol, interval="1h", limit=6)
+    c1_status, c1_dir, c1_cvd, c1_share, c1_chg = assess_taker_flow(flow_6h)
+    if c1_status != "unclear":
+        color = (G if "bullish" in c1_status or c1_dir == "long"
+                 else R if "bearish" in c1_status or c1_dir == "short"
                  else Y)
-        buy_ratio = buy_vol / (buy_vol + sell_vol) * 100 if (buy_vol + sell_vol) > 0 else 50
-        signal_row("[C1] CVD (last 1000 trades)",
-                   cvd_status.upper().replace("_", " "),
-                   color, cvd_dir,
-                   f"CVD={cvd_val:+.0f} contracts  |  buy%={buy_ratio:.1f}%  |  sell%={100-buy_ratio:.1f}%")
-        board.add("C1_cvd", cvd_dir if cvd_dir else cvd_status, weight=1)
-        if "divergence" in cvd_status:
-            # Divergence bearish (prix monte + CVD baisse) → bloque le LONG
-            # Divergence bullish (prix baisse + CVD monte) → bloque le SHORT
-            blocked_dir = "long"  if cvd_status == "divergence_bearish" else "short"
+        signal_row("[C1] CVD taker 6h",
+                   c1_status.upper().replace("_", " "),
+                   color, c1_dir,
+                   f"CVD={c1_cvd:+,.0f} contrats  |  buy={c1_share*100:.1f}%  |  prix {c1_chg:+.2f}%")
+        board.add("C1_cvd", c1_dir if c1_dir else c1_status, weight=1)
+        if "divergence" in c1_status:
+            # Divergence bearish (prix monte + flux vendeur) → bloque le LONG
+            # Divergence bullish (prix baisse + flux acheteur) → bloque le SHORT
+            blocked_dir = "long" if c1_status == "divergence_bearish" else "short"
             reason_map  = {
-                "divergence_bearish": "Prix monte mais pas d'acheteurs reels — long non confirme",
-                "divergence_bullish": "Prix baisse mais acheteurs absorbent — short risque"
+                "divergence_bearish": f"Prix +{c1_chg:.2f}% sur 6h mais flux taker vendeur (buy {c1_share*100:.0f}%) — long non confirme",
+                "divergence_bullish": f"Prix {c1_chg:.2f}% sur 6h mais flux taker acheteur (buy {c1_share*100:.0f}%) — short risque",
             }
-            board.block("cvd_divergence",
-                        reason_map.get(cvd_status, f"Divergence CVD ({cvd_status})"),
-                        direction=blocked_dir)
+            board.block("cvd_divergence", reason_map[c1_status], direction=blocked_dir)
     else:
-        row("[C1] CVD", "ERREUR API", R)
+        row("[C1] CVD taker 6h", "ERREUR API", R)
 
-    # CVD 4H : Gate.io ne fournit pas le taker split par bougie
-    # On utilise le momentum prix (close vs open) sur les 10 dernières bougies 4H
-    # comme proxy directionnel — simple mais sans bug d'unité
-    if df_4h is not None and len(df_4h) >= 10:
+    # C2 — Momentum flux taker 40h (10 périodes 4h) — remplace le compte de
+    # bougies vertes/rouges par le vrai delta acheteur/vendeur
+    flow_40h = fetch_taker_flow(symbol, interval="4h", limit=10)
+    c2_status, c2_dir, c2_cvd, c2_share, c2_chg = assess_taker_flow(
+        flow_40h, min_buy_share_dev=0.05)
+    if c2_status != "unclear":
+        color = G if c2_dir == "long" else (R if c2_dir == "short" else Y)
+        label = ("BULLISH" if c2_dir == "long"
+                 else "BEARISH" if c2_dir == "short" else "NEUTRE")
+        signal_row("[C2] Momentum taker 40h", label, color, c2_dir,
+                   f"CVD={c2_cvd:+,.0f} contrats  |  buy={c2_share*100:.1f}%  |  prix {c2_chg:+.2f}%")
+        board.add("C2_cvd_4h", c2_dir if c2_dir else "neutral", weight=1)
+    elif df_4h is not None and len(df_4h) >= 10:
+        # Fallback si contract_stats indisponible : momentum bougies 4H
         recent = df_4h.iloc[-10:]
         bullish_candles = (recent["close"] > recent["open"]).sum()
         bearish_candles = (recent["close"] < recent["open"]).sum()
         bull_ratio = bullish_candles / len(recent)
         cvd4h_dir = "long" if bull_ratio > 0.60 else "short" if bull_ratio < 0.40 else None
         color = G if cvd4h_dir == "long" else (R if cvd4h_dir == "short" else Y)
-        row("[C2] Momentum 4H (10 dernieres bougies)",
+        row("[C2] Momentum 4H (fallback bougies)",
             f"{bullish_candles} haussières / {bearish_candles} baissières"
             f"  ->  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
             color)
