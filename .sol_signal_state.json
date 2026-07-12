@@ -1,7 +1,9 @@
 {
-  "status": "possible",
+  "status": "directional_blocked",
   "direction": "short",
-  "price": 77.5,
-  "timestamp": "2026-07-12 19:20 UTC",
-  "blockers": []
+  "price": 77.09,
+  "timestamp": "2026-07-12 21:58 UTC",
+  "blockers": [
+    "cvd_divergence"
+  ]
 }
