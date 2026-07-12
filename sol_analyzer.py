@@ -202,6 +202,8 @@ def fetch_funding_rate(symbol):
                {"contract": contract, "limit": 10})
     if not data:
         return None
+    # Gate.io renvoie newest-first — on trie en ascendant pour que [-1] = le plus récent
+    data = sorted(data, key=lambda r: int(r["t"]))
     # Normalize: [{fundingRate, fundingTime}]
     return [{"fundingRate": str(r["r"]), "fundingTime": r["t"]} for r in data]
 
@@ -310,15 +312,18 @@ def fetch_macro_calendar():
         if ev.get("impact") != "High":
             continue
         try:
-            # Format: "01-06-2026" + "8:30am" — parse in ET then convert
-            dt_str = f"{ev['date']} {ev['time']}"
-            dt_et  = datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
-            # ET = UTC-5 (EST) or UTC-4 (EDT) — approximate with UTC-5
-            dt_utc = dt_et.replace(tzinfo=timezone.utc) + timedelta(hours=5)
-            if now_utc <= dt_utc <= window:
-                upcoming.append({"title": ev.get("title","?"), "time_utc": dt_utc})
-        except Exception:
-            continue
+            # Format actuel FF : date ISO 8601 avec offset ("2026-07-12T08:30:00-04:00")
+            dt_utc = datetime.fromisoformat(ev["date"]).astimezone(timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            try:
+                # Ancien format : "01-06-2026" + "8:30am" en ET (approx UTC-5)
+                dt_str = f"{ev['date']} {ev['time']}"
+                dt_et  = datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
+                dt_utc = dt_et.replace(tzinfo=timezone.utc) + timedelta(hours=5)
+            except Exception:
+                continue
+        if now_utc <= dt_utc <= window:
+            upcoming.append({"title": ev.get("title", "?"), "time_utc": dt_utc})
     return upcoming
 
 
@@ -580,38 +585,37 @@ def assess_funding(rates):
     """
     if not rates:
         return None, "unknown", None
-    current = float(rates[-1]["fundingRate"])
-    recent  = [float(r["fundingRate"]) for r in rates[-3:]]
-    avg     = sum(recent) / len(recent)
+    current = float(rates[-1]["fundingRate"])   # fraction brute (0.0001 = 0.01%)
+    pct = current * 100                          # seuils exprimés en % par période 8h
 
-    if current < -0.01:
-        return current, "favorable_long", "long"
-    elif -0.01 <= current <= 0.03:
-        return current, "neutral", None
-    elif 0.03 < current <= 0.05:
-        return current, "caution_long", "short"
-    elif current > 0.05:
-        return current, "danger_long", "short"
-    elif current < -0.05:
+    if pct < -0.05:
         return current, "danger_short", "long"
-    return current, "neutral", None
+    elif pct < -0.01:
+        return current, "favorable_long", "long"
+    elif pct <= 0.03:
+        return current, "neutral", None
+    elif pct <= 0.05:
+        return current, "caution_long", "short"
+    else:
+        return current, "danger_long", "short"
 
 
 def assess_oi(oi_df):
     """
     Compare OI trend vs price trend.
-    Returns: 'rising_healthy', 'falling', 'squeeze', 'extreme', or 'unclear'
+    Returns: (oi_change_pct, oi_current, oi_pct_of_max, oi_percentile)
+    Percentile 50 (neutre) si données insuffisantes — évite un faux bloqueur.
     """
     if oi_df is None or len(oi_df) < 6:
-        return "unclear", 0, 0
+        return 0.0, 0.0, 0.0, 50.0
 
     recent_oi    = oi_df["sumOpenInterestValue"].iloc[-6:]
-    oi_change    = (recent_oi.iloc[-1] - recent_oi.iloc[0]) / recent_oi.iloc[0] * 100
+    base_oi      = recent_oi.iloc[0]
+    oi_change    = (recent_oi.iloc[-1] - base_oi) / base_oi * 100 if base_oi else 0.0
     oi_current   = oi_df["sumOpenInterestValue"].iloc[-1]
     oi_max       = oi_df["sumOpenInterestValue"].max()
-    oi_min       = oi_df["sumOpenInterestValue"].min()
     # Percentile sur 14j — plus stable qu'un % du max ponctuel
-    oi_pct_of_max = oi_current / oi_max * 100
+    oi_pct_of_max = oi_current / oi_max * 100 if oi_max else 0.0
     # Percentile rank : quelle fraction des valeurs 14j est sous la valeur actuelle
     oi_percentile = (oi_df["sumOpenInterestValue"] <= oi_current).mean() * 100
 
@@ -679,7 +683,7 @@ class SignalBoard:
         short_pts = sum(w for _, d, w, _ in self.signals if d == "short")
         total     = long_pts + short_pts
         # Neutral placeholders that don't carry directional info
-        NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe", "ok_no_event"}
+        NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe"}
         # answered = items with a real directional signal (long/short) OR confirmed neutral
         answered = sum(1 for _, d, _, _ in self.signals
                        if d in ("long", "short") or d in NEUTRAL_VALUES)
@@ -728,8 +732,8 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     price = fetch_current_price(symbol)
     btc_price = fetch_current_price(BTC_SYMBOL)
     if price:
-        print(f"\n  {DIM}Prix SOL  {W}{price:.4f} USDT{RST}   "
-              f"{DIM}BTC  {W}{btc_price:,.2f} USDT" if btc_price else "")
+        btc_str = f"   {DIM}BTC  {W}{btc_price:,.2f} USDT" if btc_price else ""
+        print(f"\n  {DIM}Prix SOL  {W}{price:.4f} USDT{RST}{btc_str}")
 
     # ── 1. STRUCTURE DE MARCHÉ ─────────────────
     section("01 · STRUCTURE DE MARCHÉ  [Gate.io OHLCV]")
@@ -759,7 +763,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[S1] Tendance Daily", "ERREUR API", R)
 
     # S2 — MA200 Daily
-    if df_daily is not None and df_daily["ma200"].iloc[-1] is not np.nan:
+    if df_daily is not None and pd.notna(df_daily["ma200"].iloc[-1]) and price:
         ma200 = df_daily["ma200"].iloc[-1]
         price_vs_ma200 = "above" if price > ma200 else "below"
         dir_ma200 = "long" if price_vs_ma200 == "above" else "short"
@@ -888,6 +892,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     df_btc_4h = fetch_ohlcv(BTC_SYMBOL, "4h", limit=100)
     if df_btc_d is not None:
         df_btc_d = calc_mas(df_btc_d)
+    if df_btc_d is not None and btc_price and pd.notna(df_btc_d["ma200"].iloc[-1]):
         struct_btc, _, _ = assess_structure(df_btc_d, n=SWING_N)
         ma200_btc = df_btc_d["ma200"].iloc[-1]
         dir_btc = "long" if (struct_btc == "bullish" and btc_price > ma200_btc) \
@@ -993,7 +998,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             liq_dir   = "safe"
             liq_block_reason = None
         row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
-        board.add("F4_liquidations", None, weight=1)
+        board.add("F4_liquidations", liq_dir, weight=1)
         if liq_dir is None and liq_block_reason:
             blocked_dir = "short" if long_liqs > short_liqs else "long"
             board.block("recent_liquidation", liq_block_reason, direction=blocked_dir)
@@ -1001,9 +1006,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
     # F3 — Long/Short Ratio
     ls_df  = fetch_long_short_ratio(symbol, period="1h", limit=12)
     top_df = fetch_top_trader_ratio(symbol, period="1h", limit=12)
-    if ls_df is not None:
-        ls_long, ls_signal, ls_dir = assess_ls_ratio(ls_df)
-        ls_short = 1 - ls_long if ls_long else None
+    ls_long, ls_signal, ls_dir = assess_ls_ratio(ls_df) if ls_df is not None else (None, "unknown", None)
+    if ls_long is not None and pd.notna(ls_long):
+        ls_short = 1 - ls_long
         color = (G if ls_dir == "long" else R if ls_dir == "short" else DIM)
         retail_str = f"Retail: {ls_long*100:.1f}% L / {ls_short*100:.1f}% S"
         top_str = ""
@@ -1304,6 +1309,8 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             arrow = "▲" if direction == "long" else "▼"
             label = "TRADE OK" if completion >= 0.80 else "POSSIBLE — COMPLÉTER"
             verdict_box(f"{arrow}  {direction.upper()} {label}  ({pts}/{total_pts} pts)", col)
+        else:
+            verdict_box("⚡  SIGNAUX MIXTES — NE PAS TRADER", Fore.MAGENTA)
 
     elif status == "go" and direction == "long":
         print()
@@ -1382,6 +1389,9 @@ def build_telegram_message(status: str, direction, board, price: float,
         header = f"[SIGNAL] {'▲' if direction=='long' else '▼'} {dir_label} -- SOL/USDT x10"
     elif status == "blocked":
         header = "[BLOQUEUR] NE PAS TRADER -- SOL/USDT x10"
+    elif status == "directional_blocked":
+        blocked_dirs = sorted({d.upper() for _, _, d in board.blockers if d})
+        header = f"[BLOQUEUR {'/'.join(blocked_dirs)}] SOL/USDT x10 -- sens oppose envisageable"
     elif status == "possible":
         header = f"[POSSIBLE] {'▲' if direction=='long' else '▼'} {dir_label} -- SOL/USDT x10"
     else:
@@ -1505,6 +1515,7 @@ if __name__ == "__main__":
             old_state  = load_state()
             long_pts   = sum(w for _, d, w, _ in board.signals if d == "long")
             short_pts  = sum(w for _, d, w, _ in board.signals if d == "short")
+            completion = board.score()[4]
 
             # Statut effectif : blocked > directional_blocked > status du score
             if board.is_blocked:
