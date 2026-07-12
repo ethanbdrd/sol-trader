@@ -12,26 +12,23 @@ on:
         default: "false"
         type: boolean
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Permission d'écrire dans le repo pour persister le state file
+    # Permission d'écrire dans le repo pour persister le state + log + dashboard
     permissions:
       contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5
         with:
           # Récupère le dernier commit incluant le state file
           fetch-depth: 1
 
       - name: Setup Python
-        uses: actions/setup-python@v5.4.0
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -50,12 +47,18 @@ jobs:
             python sol_analyzer.py --notify
           fi
 
-      # Commit le state file dans le repo — garanti persistant entre tous les runs
+      - name: Generate dashboard
+        if: always()
+        run: python -m soltrader.dashboard
+
+      # Commit state + log + dashboard dans le repo — persistant entre tous les runs
       - name: Persist signal state
         if: always()
         run: |
           git config user.name  "sol-bot"
           git config user.email "sol-bot@github-actions"
-          git add -f .sol_signal_state.json 2>/dev/null || true
+          git add -f .sol_signal_state.json signal_log.jsonl docs/ 2>/dev/null || true
           git diff --staged --quiet || git commit -m "chore: update signal state [skip ci]"
+          # pull --rebase au cas où un autre run a poussé entre-temps
+          git pull --rebase --autostash origin main 2>/dev/null || true
           git push 2>/dev/null || true
