@@ -64,11 +64,19 @@ STATE_FILE = ".sol_signal_state.json"
 NOTIFY_ON_STATUSES = {"go", "blocked", "directional_blocked", "possible"}
 
 # Total items dans la checklist HTML (27)
-# Le script en automatise 13 — les 14 restants sont manuels
-# La completion est calculée sur 27 pour rester cohérente avec la checklist
+# Le script en automatise 20 — les 7 restants sont manuels
 TOTAL_CHECKLIST_ITEMS = 27
 AUTO_ITEMS   = 20   # automatisés par ce script
 MANUAL_ITEMS = 7    # nécessitent vraiment des données personnelles
+
+# Gates du verdict :
+# - completion = items auto évalués avec données dispo / AUTO_ITEMS
+#   (mesure la disponibilité des données, pas la force du signal)
+# - MIN_PTS_GO : points minimum côté gagnant pour un "go"
+#   (S1+S2 = 4 pts max via la tendance daily seule → 6 exige d'autres confirmations)
+# - MIN_PTS_DIRECTION : points minimum pour afficher une direction "possible"
+MIN_PTS_GO        = 6
+MIN_PTS_DIRECTION = 3
 
 # Pivot detection: N candles each side to qualify as swing high/low
 # 2 sur Daily (délai ~4 jours), 3 sur 4H/15min (délai ~12-45 bougies)
@@ -567,13 +575,17 @@ def check_session():
     h = now_utc.hour + now_utc.minute / 60.0
     # Paris = UTC+1 (CET) or UTC+2 (CEST)
     # Sessions in UTC:
-    # Asian:   23:00 – 07:00 UTC
     # London:  07:00 – 11:00 UTC  (09h-13h Paris)
-    # US:      13:00 – 21:00 UTC  (15h-23h Paris)
+    # Inter:   11:00 – 13:00 UTC  (creux entre Londres et US — pas de bloqueur)
+    # US:      13:00 – 22:00 UTC  (15h-minuit Paris) — étendu à 22h pour couvrir
+    #          le cron de 21h UTC (délai GitHub Actions inclus)
+    # Asian:   22:00 – 07:00 UTC (bloqueur fakeouts)
     if 7.0 <= h < 11.0:
         return "london", "🇬🇧 Londres (09h-13h Paris)", Y
-    elif 13.0 <= h < 21.0:
-        return "us", "🇺🇸 US (15h-23h Paris)", G
+    elif 11.0 <= h < 13.0:
+        return "inter", "⏸ Entre Londres et US — liquidité réduite", Y
+    elif 13.0 <= h < 22.0:
+        return "us", "🇺🇸 US (15h-00h Paris)", G
     else:
         return "asian", "🌙 Asiatique — FAKEOUTS", R
 
@@ -682,39 +694,32 @@ class SignalBoard:
         long_pts  = sum(w for _, d, w, _ in self.signals if d == "long")
         short_pts = sum(w for _, d, w, _ in self.signals if d == "short")
         total     = long_pts + short_pts
-        # Neutral placeholders that don't carry directional info
-        NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe"}
-        # answered = items with a real directional signal (long/short) OR confirmed neutral
-        answered = sum(1 for _, d, _, _ in self.signals
-                       if d in ("long", "short") or d in NEUTRAL_VALUES)
-        # total_items includes TOTAL_CHECKLIST_ITEMS so completion reflects
-        # the full 27-item checklist, not just the automated subset
-        completion = answered / TOTAL_CHECKLIST_ITEMS if TOTAL_CHECKLIST_ITEMS else 0
+        # answered = item évalué avec données disponibles : direction long/short
+        # OU marqueur neutre explicite ("ranging", "neutral", "safe", ...).
+        # None = données manquantes (API down, calcul impossible).
+        answered = sum(1 for _, d, _, _ in self.signals if d is not None)
+        # completion = disponibilité des données sur les items automatisés
+        completion = answered / AUTO_ITEMS if AUTO_ITEMS else 0
 
         if total == 0:
-            return "wait", None, 0, 0, 0
+            return "wait", None, 0, 0, completion
         ratio = long_pts / total
-        if ratio >= 0.80:
+        if ratio >= 0.65:
             direction = "long"
-            strength  = "FORT"
-        elif ratio >= 0.65:
-            direction = "long"
-            strength  = "PROBABLE"
-        elif ratio <= 0.20:
-            direction = "short"
-            strength  = "FORT"
         elif ratio <= 0.35:
             direction = "short"
-            strength  = "PROBABLE"
         else:
             direction = None
-            strength  = "MIXTES"
 
         if completion < 0.60:
             return "incomplete", direction, long_pts, short_pts, completion
         if direction is None:
             return "mixed", None, long_pts, short_pts, completion
-        if completion >= 0.80 and strength in ("FORT", "PROBABLE"):
+        win_pts = long_pts if direction == "long" else short_pts
+        if win_pts < MIN_PTS_DIRECTION:
+            # Direction issue de trop peu de signaux actifs → pas exploitable
+            return "mixed", None, long_pts, short_pts, completion
+        if completion >= 0.80 and win_pts >= MIN_PTS_GO:
             return "go", direction, long_pts, short_pts, completion
         return "possible", direction, long_pts, short_pts, completion
 
@@ -758,7 +763,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         signal_row("[S1] Tendance Daily (HH/HL vs LH/LL)",
                    struct_d.upper(), color, dir_d,
                    f"derniers hauts: {[f'{v:.2f}' for v in sh_d[-3:]]}")
-        board.add("S1_daily_structure", dir_d, weight=2)
+        board.add("S1_daily_structure", dir_d if dir_d else struct_d, weight=2)
     else:
         row("[S1] Tendance Daily", "ERREUR API", R)
 
@@ -784,7 +789,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         dir_4h = "long" if struct_4h == "bullish" else ("short" if struct_4h == "bearish" else None)
         signal_row("[S3] Structure 4H",
                    struct_4h.upper(), color, dir_4h)
-        board.add("S3_4h_structure", dir_4h, weight=1)
+        board.add("S3_4h_structure", dir_4h if dir_4h else struct_4h, weight=1)
     else:
         row("[S3] Structure 4H", "ERREUR API", R)
 
@@ -807,7 +812,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             color = Y
         signal_row("[S5] MAs alignées 15min",
                    dir_ma.upper() if dir_ma else "RANGE", color, dir_ma, ma_label)
-        board.add("S5_ma_alignment", dir_ma, weight=1)
+        board.add("S5_ma_alignment", dir_ma if dir_ma else "range", weight=1)
     else:
         row("[S5] MAs 15min", "ERREUR API", R)
 
@@ -855,7 +860,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         )
         color = G if bos_dir == "long" else (R if bos_dir == "short" else (Y if bos_signal == "choch_warning" else DIM))
         signal_row("[S4] BOS / CHoCH 4H", bos_label, color, bos_dir)
-        board.add("S4_bos_choch", bos_dir, weight=1)
+        board.add("S4_bos_choch",
+                  bos_dir if bos_dir else ("choch" if bos_signal == "choch_warning" else "neutral"),
+                  weight=1)
         if bos_signal == "choch_warning":
             board.block("choch_4h", f"CHoCH detecte sur 4H — potentiel retournement")
     else:
@@ -866,12 +873,9 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     session_id, session_name, session_color = check_session()
     row("[E2] Session de trading", session_name, session_color)
+    board.add("E2_session", session_id, weight=1)
     if session_id == "asian":
         board.block("session", "Session asiatique — fakeouts fréquents")
-    else:
-        # M2 : BTC en tendance claire (pas en range) — item neutre scoré
-        # On le résoudra après avoir calculé le biais BTC (struct_btc)
-        pass  # filled below after BTC fetch
 
     # M1 — Macro calendar (Forex Factory JSON)
     macro_events = fetch_macro_calendar()
@@ -885,6 +889,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         names = ", ".join(e["title"] for e in macro_events[:3])
         row("[M1] Calendrier macro", f"⚠ {len(macro_events)} EVENT(S) HIGH dans les 4h", R,
             names)
+        board.add("M1_macro", "event_near", weight=1)
         board.block("macro_event", f"Event(s) macro imminents: {names}")
 
     # BTC structure (même analyse que SOL)
@@ -903,7 +908,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    f"{struct_btc.upper()} / MA200 {'OK ▲' if btc_price > ma200_btc else 'KO ▼'}",
                    color, dir_btc,
                    f"MA200={ma200_btc:,.2f}")
-        board.add("M3_btc_bias", dir_btc, weight=1)
+        board.add("M3_btc_bias", dir_btc if dir_btc else "neutral", weight=1)
         # M2 : BTC en tendance claire (non-ranging)
         btc_trending = struct_btc in ("bullish", "bearish")
         m2_dir = dir_btc if btc_trending else None
@@ -912,7 +917,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         m2_color   = (G if dir_btc == "long" else R if dir_btc == "short" else Y)
         row("[M2] BTC en tendance", m2_label, m2_color,
             "" if btc_trending else "attends une tendance BTC directionnelle")
-        board.add("M2_btc_trending", m2_dir, weight=1)
+        board.add("M2_btc_trending", m2_dir if m2_dir else "ranging", weight=1)
     else:
         row("[M3] Biais BTC", "ERREUR API", R)
 
@@ -933,7 +938,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    f"{fr_pct:+.4f}%  ({fr_signal})",
                    color, fr_dir,
                    f"annualisé: {annualized:+.1f}%  |  3 derniers: {[f'{v:+.4f}%' for v in recent_fr]}")
-        board.add("F1_funding", fr_dir, weight=1)
+        board.add("F1_funding", fr_dir if fr_dir else "neutral", weight=1)
         if abs(fr_pct) > 0.07:
             board.block("funding_extreme",
                         f"Funding extrême ({fr_pct:+.4f}%) — flush probable")
@@ -956,7 +961,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[F2] Open Interest",
             f"${oi_m:.1f}M  (6h: {oi_change:+.2f}%  |  percentile 14j: {oi_percentile:.0f}%)",
             color, oi_note)
-        board.add("F2_oi", None, weight=1)
+        board.add("F2_oi", "extreme" if is_extreme else "neutral", weight=1)
         if is_extreme:
             board.block("oi_extreme",
                         f"OI au {oi_percentile:.0f}e percentile sur 14j — marche surexpose")
@@ -985,12 +990,12 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         elif long_liqs > short_liqs * 2 and long_liqs >= LIQ_MIN_THRESHOLD:
             liq_hint  = f"pic LIQS LONGS ({long_liqs:.0f} contracts) — eviter SHORT ici (bottom possible)"
             liq_color = Y
-            liq_dir   = None
+            liq_dir   = "warning"
             liq_block_reason = f"Longs viennent d'etre liquides ({long_liqs:.0f} contracts) — ne pas shorter un potentiel bottom"
         elif short_liqs > long_liqs * 2 and short_liqs >= LIQ_MIN_THRESHOLD:
             liq_hint  = f"pic LIQS SHORTS ({short_liqs:.0f} contracts) — eviter LONG ici (top possible)"
             liq_color = Y
-            liq_dir   = None
+            liq_dir   = "warning"
             liq_block_reason = f"Shorts viennent d'etre liquides ({short_liqs:.0f} contracts) — ne pas longer un potentiel top"
         else:
             liq_hint  = f"liqs equilibrees (L:{long_liqs:.0f} / S:{short_liqs:.0f} contracts)"
@@ -999,7 +1004,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             liq_block_reason = None
         row("[F4] Liquidations récentes (8h)", liq_hint, liq_color)
         board.add("F4_liquidations", liq_dir, weight=1)
-        if liq_dir is None and liq_block_reason:
+        if liq_block_reason:
             blocked_dir = "short" if long_liqs > short_liqs else "long"
             board.block("recent_liquidation", liq_block_reason, direction=blocked_dir)
 
@@ -1018,7 +1023,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         signal_row("[F3] Ratio Long/Short (contrarian)",
                    ls_signal.upper(), color, ls_dir,
                    retail_str + top_str)
-        board.add("F3_ls_ratio", ls_dir, weight=1)
+        board.add("F3_ls_ratio", ls_dir if ls_dir else "neutral", weight=1)
     else:
         row("[F3] Ratio Long/Short", "ERREUR API", R)
 
@@ -1057,7 +1062,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
                    cvd_status.upper().replace("_", " "),
                    color, cvd_dir,
                    f"CVD={cvd_val:+.0f} contracts  |  buy%={buy_ratio:.1f}%  |  sell%={100-buy_ratio:.1f}%")
-        board.add("C1_cvd", cvd_dir, weight=1)
+        board.add("C1_cvd", cvd_dir if cvd_dir else cvd_status, weight=1)
         if "divergence" in cvd_status:
             # Divergence bearish (prix monte + CVD baisse) → bloque le LONG
             # Divergence bullish (prix baisse + CVD monte) → bloque le SHORT
@@ -1086,7 +1091,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             f"{bullish_candles} haussières / {bearish_candles} baissières"
             f"  ->  {'BULLISH' if cvd4h_dir=='long' else 'BEARISH' if cvd4h_dir=='short' else 'NEUTRE'}",
             color)
-        board.add("C2_cvd_4h", cvd4h_dir, weight=1)
+        board.add("C2_cvd_4h", cvd4h_dir if cvd4h_dir else "neutral", weight=1)
 
     # ── 5. HEATMAP ────────────────────────────
     section("05 · LIQUIDATION HEATMAP  [Manuel requis]")
@@ -1104,6 +1109,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         row("[C3] Absorption 15min",
             f"ABSORPTION DETECTEE (vol x{vol_ratio:.1f} avg, body {body_pct:.2f}%)", R,
             "volume fort sans mouvement = vendeurs/acheteurs cachés")
+        board.add("C3_absorption", "absorption", weight=1)
         board.block("absorption", "Absorption detectee sur 15min — attendre resolution")
     else:
         row("[C3] Absorption 15min", "Aucune absorption detectee", G)
@@ -1155,10 +1161,10 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             row("[E1] FVG le plus proche (15min)",
                 f"{ftype.upper()} FVG [{flo:.2f} - {fhi:.2f}]  dist: {dist:.2f}%",
                 color, zone_label)
-            board.add("E1_fvg_ob", e1_dir, weight=1)
+            board.add("E1_fvg_ob", e1_dir if e1_dir else "neutral", weight=1)
         else:
             row("[E1] FVG / Order Block", "Aucun FVG recent detectable", DIM)
-            board.add("E1_fvg_ob", None, weight=1)
+            board.add("E1_fvg_ob", "none_detected", weight=1)
     else:
         row("[E1] FVG / Order Block", "DONNÉES INSUFFISANTES", DIM)
 
@@ -1171,11 +1177,11 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         board.add("E3_candle_confirm", pattern_dir, weight=1)
     else:
         row("[E3] Confirmation bougie 15min", "Pas de pattern clair", DIM)
-        board.add("E3_candle_confirm", None, weight=1)
+        board.add("E3_candle_confirm", "no_pattern" if df_15m is not None else None, weight=1)
 
     # Détection contradiction E1 vs E3
     e1_dir_val = next((d for n,d,_,_ in board.signals if n == "E1_fvg_ob"), None)
-    if (e1_dir_val and pattern_dir
+    if (e1_dir_val in ("long", "short") and pattern_dir in ("long", "short")
             and e1_dir_val != pattern_dir):
         row("[!] Contradiction E1/E3",
             f"FVG {e1_dir_val.upper()} vs bougie {pattern_dir.upper()} — signaux opposés",
@@ -1197,8 +1203,8 @@ def run_analysis(symbol=SYMBOL, verbose=False):
         if lvn_below: lvn_str += f"  LVN↓ {lvn_below:.2f}"
         row("[E4] Volume Profile (15min)",
             f"POC: {poc_price:.2f}  (dist: {dist_poc:.2f}%){lvn_str}", color)
-        e4_dir = None  # POC ne donne pas de direction mais confirme la zone
-        board.add("E4_vp_poc", e4_dir, weight=1)
+        # POC ne donne pas de direction mais confirme la zone
+        board.add("E4_vp_poc", "neutral", weight=1)
 
         # R1 suggestion SL basé sur les pivots structurels
         if df_4h is not None and price:
@@ -1261,6 +1267,8 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             else:
                 row("[R1] SL suggéré (auto)",
                     "Pas de pivot structurel identifiable — SL manuel requis", Y)
+            if sl_below or sh_above:
+                board.add("R1_sl_suggested", "computed", weight=1)
     else:
         row("[E4] Volume Profile", "DONNÉES INSUFFISANTES", DIM)
 
@@ -1271,15 +1279,14 @@ def run_analysis(symbol=SYMBOL, verbose=False):
 
     status, direction, long_pts, short_pts, completion = board.score()
     total_pts    = long_pts + short_pts
-    NEUTRAL_VALUES = {"ok_no_event", "no_absorption", "safe"}
-    auto_answered = sum(1 for _, d, _, _ in board.signals
-                        if d in ("long", "short") or d in NEUTRAL_VALUES)
+    auto_answered = sum(1 for _, d, _, _ in board.signals if d is not None)
+    directional   = sum(1 for _, d, _, _ in board.signals if d in ("long", "short"))
 
     print(f"\n  {DIM}Points LONG   {G}{long_pts:>4} pts")
     print(f"  {DIM}Points SHORT  {R}{short_pts:>4} pts")
-    print(f"  {DIM}Auto  {W}{auto_answered:>2}/{AUTO_ITEMS} items{DIM}  |  "
-          f"Manuel  {W}{MANUAL_ITEMS} items restants{DIM}  |  "
-          f"Completion  {W}{completion*100:.0f}%/{TOTAL_CHECKLIST_ITEMS} items")
+    print(f"  {DIM}Données  {W}{auto_answered:>2}/{AUTO_ITEMS} items auto ({completion*100:.0f}%){DIM}  |  "
+          f"Directionnels  {W}{directional}{DIM}  |  "
+          f"Manuel  {W}{MANUAL_ITEMS} items restants")
 
     if board.is_blocked:
         # Bloqueurs globaux présents — bloquent tout trading
@@ -1307,7 +1314,7 @@ def run_analysis(symbol=SYMBOL, verbose=False):
             pts = long_pts if direction == "long" else short_pts
             col = Fore.GREEN if direction == "long" else Fore.RED
             arrow = "▲" if direction == "long" else "▼"
-            label = "TRADE OK" if completion >= 0.80 else "POSSIBLE — COMPLÉTER"
+            label = "TRADE OK" if status == "go" else "POSSIBLE — COMPLÉTER"
             verdict_box(f"{arrow}  {direction.upper()} {label}  ({pts}/{total_pts} pts)", col)
         else:
             verdict_box("⚡  SIGNAUX MIXTES — NE PAS TRADER", Fore.MAGENTA)
@@ -1416,7 +1423,7 @@ def build_telegram_message(status: str, direction, board, price: float,
             lines.append(f"  ! {dlbl}{name}: {r}")
         lines.append("")
 
-    actionable = [s for s in board.signals if s[1] is not None]
+    actionable = [s for s in board.signals if s[1] in ("long", "short")]
     if actionable:
         lines.append("== SIGNAUX ==")
         for name, sig_dir, weight, detail in actionable[-8:]:
