@@ -1,7 +1,10 @@
 {
-  "status": "possible",
-  "direction": "short",
-  "price": 77.86,
-  "timestamp": "2026-07-22 20:20 UTC",
-  "blockers": []
+  "status": "blocked",
+  "direction": null,
+  "price": 78.0,
+  "timestamp": "2026-07-22 22:15 UTC",
+  "blockers": [
+    "session",
+    "macro_event"
+  ]
 }
