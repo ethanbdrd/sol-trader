@@ -1,10 +1,7 @@
 {
-  "status": "blocked",
+  "status": "go",
   "direction": "short",
-  "price": 73.94,
-  "timestamp": "2026-07-25 13:59 UTC",
-  "blockers": [
-    "absorption",
-    "sl_trop_serre_long"
-  ]
+  "price": 74.18,
+  "timestamp": "2026-07-25 15:18 UTC",
+  "blockers": []
 }
