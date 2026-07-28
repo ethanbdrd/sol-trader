@@ -1,7 +1,10 @@
 {
-  "status": "go",
+  "status": "blocked",
   "direction": "short",
-  "price": 73.32,
-  "timestamp": "2026-07-28 09:46 UTC",
-  "blockers": []
+  "price": 73.2,
+  "timestamp": "2026-07-28 12:11 UTC",
+  "blockers": [
+    "choch_4h",
+    "sl_trop_serre_long"
+  ]
 }
