@@ -1,13 +1,10 @@
 {
   "status": "blocked",
-  "direction": "short",
-  "price": 74.12,
-  "timestamp": "2026-07-28 22:15 UTC",
+  "direction": null,
+  "price": 74.01,
+  "timestamp": "2026-07-29 09:48 UTC",
   "blockers": [
     "choch_4h",
-    "session",
-    "macro_event",
-    "cvd_divergence",
-    "sl_trop_serre_long"
+    "cvd_divergence"
   ]
 }
