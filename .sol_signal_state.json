@@ -1,7 +1,9 @@
 {
-  "status": "go",
+  "status": "blocked",
   "direction": "short",
-  "price": 73.28,
-  "timestamp": "2026-07-31 16:55 UTC",
-  "blockers": []
+  "price": 73.02,
+  "timestamp": "2026-07-31 18:44 UTC",
+  "blockers": [
+    "absorption"
+  ]
 }
