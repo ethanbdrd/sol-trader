@@ -1,9 +1,7 @@
 {
-  "status": "directional_blocked",
+  "status": "go",
   "direction": "short",
-  "price": 71.92,
-  "timestamp": "2026-08-01 18:10 UTC",
-  "blockers": [
-    "recent_liquidation"
-  ]
+  "price": 71.65,
+  "timestamp": "2026-08-01 21:08 UTC",
+  "blockers": []
 }
