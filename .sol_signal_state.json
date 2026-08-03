@@ -1,9 +1,7 @@
 {
-  "status": "blocked",
+  "status": "go",
   "direction": "short",
-  "price": 72.52,
-  "timestamp": "2026-08-03 10:51 UTC",
-  "blockers": [
-    "macro_event"
-  ]
+  "price": 73.36,
+  "timestamp": "2026-08-03 16:39 UTC",
+  "blockers": []
 }
