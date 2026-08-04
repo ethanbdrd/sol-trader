@@ -1,7 +1,9 @@
 {
-  "status": "go",
+  "status": "directional_blocked",
   "direction": "short",
-  "price": 73.22,
-  "timestamp": "2026-08-04 09:49 UTC",
-  "blockers": []
+  "price": 73.75,
+  "timestamp": "2026-08-04 12:17 UTC",
+  "blockers": [
+    "sl_trop_serre_short"
+  ]
 }
