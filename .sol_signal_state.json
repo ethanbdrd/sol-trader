@@ -1,8 +1,8 @@
 {
   "status": "directional_blocked",
-  "direction": "short",
-  "price": 74.8,
-  "timestamp": "2026-08-08 09:52 UTC",
+  "direction": null,
+  "price": 75.17,
+  "timestamp": "2026-08-08 11:40 UTC",
   "blockers": [
     "sl_trop_serre_short"
   ]
