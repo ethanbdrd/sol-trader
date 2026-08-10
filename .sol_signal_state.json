@@ -1,10 +1,9 @@
 {
   "status": "blocked",
   "direction": "short",
-  "price": 76.33,
-  "timestamp": "2026-08-10 13:41 UTC",
+  "price": 75.72,
+  "timestamp": "2026-08-10 17:07 UTC",
   "blockers": [
-    "choch_4h",
-    "recent_liquidation"
+    "choch_4h"
   ]
 }
