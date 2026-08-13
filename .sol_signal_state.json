@@ -1,8 +1,8 @@
 {
   "status": "blocked",
-  "direction": null,
-  "price": 75.84,
-  "timestamp": "2026-08-13 10:20 UTC",
+  "direction": "short",
+  "price": 75.61,
+  "timestamp": "2026-08-13 11:57 UTC",
   "blockers": [
     "macro_event",
     "sl_trop_serre_long"
