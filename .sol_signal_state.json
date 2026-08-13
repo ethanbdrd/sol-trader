@@ -1,9 +1,9 @@
 {
   "status": "blocked",
   "direction": null,
-  "price": 75.41,
-  "timestamp": "2026-08-12 22:00 UTC",
+  "price": 76.21,
+  "timestamp": "2026-08-13 08:42 UTC",
   "blockers": [
-    "session"
+    "macro_event"
   ]
 }
