@@ -1,8 +1,8 @@
 {
   "status": "blocked",
-  "direction": "long",
-  "price": 94.16,
-  "timestamp": "2026-08-22 16:38 UTC",
+  "direction": null,
+  "price": 92.5,
+  "timestamp": "2026-08-23 07:45 UTC",
   "blockers": [
     "oi_extreme"
   ]
