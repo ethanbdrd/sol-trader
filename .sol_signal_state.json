@@ -1,10 +1,9 @@
 {
   "status": "blocked",
   "direction": "long",
-  "price": 96.0,
-  "timestamp": "2026-08-24 11:42 UTC",
+  "price": 95.07,
+  "timestamp": "2026-08-24 14:00 UTC",
   "blockers": [
-    "oi_extreme",
-    "sl_trop_serre_short"
+    "oi_extreme"
   ]
 }
