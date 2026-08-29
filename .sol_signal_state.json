@@ -1,9 +1,7 @@
 {
-  "status": "directional_blocked",
+  "status": "go",
   "direction": "long",
-  "price": 104.97,
-  "timestamp": "2026-08-29 17:06 UTC",
-  "blockers": [
-    "cvd_divergence"
-  ]
+  "price": 105.55,
+  "timestamp": "2026-08-29 19:43 UTC",
+  "blockers": []
 }
