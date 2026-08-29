@@ -1,10 +1,7 @@
 {
-  "status": "blocked",
+  "status": "go",
   "direction": "long",
-  "price": 103.75,
-  "timestamp": "2026-08-29 02:48 UTC",
-  "blockers": [
-    "choch_4h",
-    "session"
-  ]
+  "price": 103.54,
+  "timestamp": "2026-08-29 13:09 UTC",
+  "blockers": []
 }
