@@ -1,7 +1,10 @@
 {
-  "status": "go",
+  "status": "blocked",
   "direction": "long",
-  "price": 105.55,
-  "timestamp": "2026-08-29 19:43 UTC",
-  "blockers": []
+  "price": 105.13,
+  "timestamp": "2026-08-29 22:39 UTC",
+  "blockers": [
+    "session",
+    "cvd_divergence"
+  ]
 }
