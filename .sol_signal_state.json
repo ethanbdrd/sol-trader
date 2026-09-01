@@ -1,9 +1,10 @@
 {
-  "status": "blocked",
+  "status": "directional_blocked",
   "direction": "long",
-  "price": 102.11,
-  "timestamp": "2026-09-01 12:33 UTC",
+  "price": 100.86,
+  "timestamp": "2026-09-01 17:18 UTC",
   "blockers": [
-    "macro_event"
+    "recent_liquidation",
+    "sl_trop_serre_long"
   ]
 }
