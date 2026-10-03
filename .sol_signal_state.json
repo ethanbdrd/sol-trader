@@ -1,11 +1,7 @@
 {
-  "status": "blocked",
+  "status": "possible",
   "direction": "long",
-  "price": 118.52,
-  "timestamp": "2026-10-02 22:58 UTC",
-  "blockers": [
-    "choch_4h",
-    "session",
-    "oi_extreme"
-  ]
+  "price": 119.38,
+  "timestamp": "2026-10-03 12:30 UTC",
+  "blockers": []
 }
