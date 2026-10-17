@@ -1,9 +1,7 @@
 {
-  "status": "blocked",
-  "direction": null,
-  "price": 104.21,
-  "timestamp": "2026-10-16 23:33 UTC",
-  "blockers": [
-    "session"
-  ]
+  "status": "possible",
+  "direction": "short",
+  "price": 104.63,
+  "timestamp": "2026-10-17 11:34 UTC",
+  "blockers": []
 }
