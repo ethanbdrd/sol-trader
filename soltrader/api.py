@@ -56,30 +56,6 @@ def fetch_ohlcv(symbol, interval, limit=500):
     return df
 
 
-def fetch_taker_flow(symbol, interval="1h", limit=6):
-    """
-    Volumes taker par période depuis contract_stats.
-    long_taker_size / short_taker_size = volume taker acheteur / vendeur
-    (contrats) PAR période — vérifié : lsr_taker == long/short exactement,
-    valeurs non monotones donc bien par période, pas cumulées.
-    mark_price permet de comparer flux et prix sur la MÊME fenêtre.
-    """
-    contract = _gate_contract(symbol)
-    data = get(f"{GATE_BASE}/futures/usdt/contract_stats",
-               {"contract": contract, "interval": interval, "limit": limit})
-    if not data:
-        return None
-    df = pd.DataFrame(data)
-    for col in ("long_taker_size", "short_taker_size", "mark_price"):
-        if col not in df.columns:
-            return None
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
-    df = df.sort_values("timestamp")
-    df["delta"] = df["long_taker_size"] - df["short_taker_size"]
-    return df
-
-
 def fetch_funding_rate(symbol, limit=10):
     """
     Gate.io funding rate history.
@@ -96,50 +72,35 @@ def fetch_funding_rate(symbol, limit=10):
     return [{"fundingRate": str(r["r"]), "fundingTime": r["t"]} for r in data]
 
 
+STATS_NUMERIC = ("long_taker_size", "short_taker_size", "mark_price",
+                 "open_interest", "open_interest_usd", "lsr_account",
+                 "long_liq_size", "short_liq_size", "last_funding_rate")
+
+
+def normalize_contract_stats(df):
+    """Colonnes numériques + index timestamp trié. sumOpenInterestValue = OI en USD."""
+    df = df.copy()
+    for col in STATS_NUMERIC:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    if "open_interest_usd" in df.columns:
+        df["sumOpenInterestValue"] = df["open_interest_usd"]
+    return df.sort_values("timestamp").set_index("timestamp")
+
+
 def fetch_contract_stats(symbol, interval="1h", limit=48):
     """
-    Gate.io contract_stats brut (OI, ratios, taker flow, liquidations par période).
-    Colonnes numériques normalisées, trié par timestamp ascendant.
+    Gate.io contract_stats (OI, ratios, taker flow, liquidations par période).
+    La ligne horodatée T couvre la période [T, T+interval[.
+    Retourne un DataFrame normalisé indexé par timestamp, ou None.
     """
     contract = _gate_contract(symbol)
     data = get(f"{GATE_BASE}/futures/usdt/contract_stats",
                {"contract": contract, "interval": interval, "limit": limit})
     if not data:
         return None
-    df = pd.DataFrame(data)
-    df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True)
-    df = df.sort_values("timestamp")
-    return df
-
-
-def fetch_open_interest_history(symbol, period="1h", limit=48):
-    """
-    Gate.io open interest via contract_stats.
-    Returns OI in number of contracts — open_interest_usd for USD value.
-    """
-    df = fetch_contract_stats(symbol, interval=period, limit=limit)
-    if df is None:
-        return None
-    df["sumOpenInterest"]      = pd.to_numeric(df.get("open_interest", 0), errors="coerce")
-    df["sumOpenInterestValue"] = pd.to_numeric(df.get("open_interest_usd", 0), errors="coerce")
-    return df
-
-
-def fetch_long_short_ratio(symbol, period="1h", limit=24):
-    """
-    Gate.io long/short account ratio from contract_stats.
-    lsr_account = long accounts / short accounts ratio (> 1 = more longs)
-    """
-    df = fetch_contract_stats(symbol, interval=period, limit=limit)
-    if df is None or "lsr_account" not in df.columns:
-        return None
-    # lsr_account: ratio long/short accounts (e.g. 1.5 = 60% long, 40% short)
-    df["lsr"] = pd.to_numeric(df["lsr_account"], errors="coerce")
-    # Convert ratio to longAccount fraction: ratio/(1+ratio)
-    df["longAccount"]  = df["lsr"] / (1 + df["lsr"])
-    df["shortAccount"] = 1 - df["longAccount"]
-    df["longShortRatio"] = df["lsr"]
-    return df
+    return normalize_contract_stats(pd.DataFrame(data))
 
 
 def fetch_current_price(symbol):
@@ -149,27 +110,6 @@ def fetch_current_price(symbol):
     if data and len(data) > 0:
         return float(data[0]["last"])
     return None
-
-
-def fetch_liquidations(symbol, limit=100):
-    """
-    Gate.io recent liquidation orders.
-    GET /futures/usdt/liq_orders?contract=SOL_USDT
-    Returns list of {time, contract, size (+ = long liq, - = short liq), price}
-    Falls back to empty list on error rather than None (avoids ERREUR API display).
-    """
-    contract = _gate_contract(symbol)
-    try:
-        data = get(f"{GATE_BASE}/futures/usdt/liq_orders",
-                   {"contract": contract, "limit": limit})
-        if not data:
-            return []
-        # Gate.io sometimes wraps in {"data": [...]} — handle both
-        if isinstance(data, dict):
-            return data.get("data", data.get("result", []))
-        return data
-    except Exception:
-        return []
 
 
 def fetch_macro_calendar():

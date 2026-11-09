@@ -40,11 +40,9 @@ Architecture : le code vit dans le package soltrader/
 
 import argparse
 import time
-from datetime import datetime, timezone
 
 from soltrader.config import SYMBOL, NOTIFY_ON_STATUSES
 from soltrader.display import C, DIM, RST
-from soltrader.api import fetch_current_price
 from soltrader.analysis import run_analysis
 from soltrader.notify import (send_telegram, build_telegram_message,
                               load_state, save_state, signal_changed)
@@ -79,10 +77,9 @@ def main():
         return
 
     # Run unique (mode cron / GitHub Actions)
-    price = fetch_current_price(args.symbol) or 0.0
-    status, direction, board = run_analysis(symbol=args.symbol, verbose=args.verbose)
-
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    status, direction, board, ev, md = run_analysis(symbol=args.symbol, verbose=args.verbose)
+    price = md.price or 0.0
+    now_str = md.now.strftime("%Y-%m-%d %H:%M UTC")
     _, _, long_pts, short_pts, completion = board.score()
     effective_status = board.effective_status(status, completion)
     sent = False
