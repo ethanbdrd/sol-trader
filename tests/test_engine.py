@@ -109,5 +109,5 @@ class TestFailSafe:
 
     def test_api_outage_cannot_produce_go(self):
         ev = evaluate(market(stats_1h=None, funding=None, macro=None, sol_15m=None, price=100.0))
-        status, *_ , completion = ev.board.score()
-        assert ev.board.effective_status(status, completion) != "go"
+        status, _dir, *_, completion = ev.board.score()
+        assert ev.board.effective_status(status, completion, _dir) != "go"

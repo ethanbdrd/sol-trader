@@ -97,13 +97,25 @@ class TestBlockers:
 
     def test_effective_status(self):
         board = SignalBoard()
-        assert board.effective_status("possible", 1.0) == "possible"
+        assert board.effective_status("possible", 1.0, "long") == "possible"
         board.block("sl_trop_serre_long", "", direction="long")
-        assert board.effective_status("possible", 1.0) == "directional_blocked"
+        assert board.effective_status("possible", 1.0, "long") == "directional_blocked"
         # completion insuffisante → pas de directional_blocked
-        assert board.effective_status("incomplete", 0.3) == "incomplete"
+        assert board.effective_status("incomplete", 0.3, "long") == "incomplete"
         board.block("session", "")
-        assert board.effective_status("possible", 1.0) == "blocked"
+        assert board.effective_status("possible", 1.0, "long") == "blocked"
+
+    def test_blocker_on_other_side_keeps_go(self):
+        """A4 — un go short n'est pas déclassé par un bloqueur long-only."""
+        board = SignalBoard()
+        board.block("sl_trop_serre_long", "", direction="long")
+        assert board.effective_status("go", 1.0, "short") == "go"
+        assert board.effective_status("go", 1.0, "long") == "directional_blocked"
+
+    def test_no_direction_is_not_directional_blocked(self):
+        board = SignalBoard()
+        board.block("cvd_divergence", "", direction="long")
+        assert board.effective_status("mixed", 1.0, None) == "mixed"
 
 
 class TestStricterGo:

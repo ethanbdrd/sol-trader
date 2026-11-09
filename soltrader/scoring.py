@@ -84,10 +84,14 @@ class SignalBoard:
         return sum(w for n, d, w, _ in self.signals
                    if d == direction and n not in REGIME_SIGNALS)
 
-    def effective_status(self, status, completion):
-        """Statut effectif pour la notif : blocked > directional_blocked > score."""
+    def effective_status(self, status, completion, direction):
+        """Statut effectif : blocked > directional_blocked > score.
+
+        directional_blocked seulement si le bloqueur vise LE sens proposé :
+        un go short avec un bloqueur long-only reste un go short.
+        """
         if self.is_blocked:
             return "blocked"
-        if self.directional_blockers() and completion >= 0.55:
+        if direction and self.is_blocked_for(direction) and completion >= 0.55:
             return "directional_blocked"
         return status

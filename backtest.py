@@ -101,7 +101,7 @@ def main():
         if out:
             board, price = out
             status, direction, lp, sp, completion = board.score()
-            eff = board.effective_status(status, completion)
+            eff = board.effective_status(status, completion, direction)
             results.append({
                 "ts": t, "price": price, "status": eff, "direction": direction,
                 "long_pts": lp, "short_pts": sp,

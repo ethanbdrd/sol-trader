@@ -81,7 +81,7 @@ def main():
     price = md.price or 0.0
     now_str = md.now.strftime("%Y-%m-%d %H:%M UTC")
     _, _, long_pts, short_pts, completion = board.score()
-    effective_status = board.effective_status(status, completion)
+    effective_status = board.effective_status(status, completion, direction)
     sent = False
 
     if args.notify:
