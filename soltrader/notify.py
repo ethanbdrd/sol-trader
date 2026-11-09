@@ -8,6 +8,11 @@ from .config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, STATE_FILE
 from .display import G, R, Y, RST
 
 
+def redact(text: str) -> str:
+    """Remplace le token Telegram par *** dans un texte destiné aux logs."""
+    return text.replace(TELEGRAM_TOKEN, "***") if TELEGRAM_TOKEN else text
+
+
 def send_telegram(text: str, retries: int = 3) -> bool:
     """Envoie un message Telegram en texte brut. Retente jusqu'à `retries` fois.
     IMPORTANT : pas de parse_mode (HTML cause des 400 sur caractères spéciaux)."""
@@ -29,7 +34,8 @@ def send_telegram(text: str, retries: int = 3) -> bool:
             if attempt < retries:
                 time.sleep(3 * attempt)
         except requests.exceptions.RequestException as e:
-            print(R + f"  [TELEGRAM] Erreur reseau : {e}" + RST)
+            # Le message d'exception contient l'URL /bot<TOKEN>/... : on masque le token
+            print(R + f"  [TELEGRAM] Erreur reseau : {redact(str(e))}" + RST)
             return False
     print(R + "  [TELEGRAM] Echec apres toutes les tentatives." + RST)
     return False

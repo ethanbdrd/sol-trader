@@ -111,3 +111,14 @@ class TestFailSafe:
         ev = evaluate(market(stats_1h=None, funding=None, macro=None, sol_15m=None, price=100.0))
         status, _dir, *_, completion = ev.board.score()
         assert ev.board.effective_status(status, completion, _dir) != "go"
+
+
+class TestStopLevel:
+    def test_stop_uses_pivot_nearest_to_price(self, monkeypatch):
+        import numpy as np
+        import soltrader.engine as eng
+        # creux 4H : récent 90 (loin), ancien 97 (proche) ; prix 100
+        monkeypatch.setattr(eng, "assess_structure",
+                            lambda df, n=2: ("ranging", np.array([105.0, 103.0]), np.array([97.0, 90.0])))
+        ev = evaluate(market(price=100.0))
+        assert ev.sl_long == 97.0 and ev.sl_short == 103.0

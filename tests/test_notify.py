@@ -61,3 +61,22 @@ class TestTelegramMessage:
                                      2, 0, "2026-07-12 15:00 UTC", "SOLUSDT")
         assert "F2_oi" not in msg
         assert "S1_daily_structure" in msg
+
+
+class TestRedact:
+    def test_token_is_masked(self, monkeypatch):
+        import soltrader.notify as n
+        monkeypatch.setattr(n, "TELEGRAM_TOKEN", "123456:SECRET")
+        msg = "Max retries exceeded with url: /bot123456:SECRET/sendMessage"
+        assert "SECRET" not in n.redact(msg) and "/bot***/" in n.redact(msg)
+
+    def test_network_error_does_not_print_token(self, monkeypatch, capsys):
+        import requests
+        import soltrader.notify as n
+        monkeypatch.setattr(n, "TELEGRAM_TOKEN", "123456:SECRET")
+        monkeypatch.setattr(n, "TELEGRAM_CHAT_ID", "42")
+        def boom(url, **kw):
+            raise requests.exceptions.ConnectionError(f"failed for {url}")
+        monkeypatch.setattr(n.requests, "post", boom)
+        assert n.send_telegram("x") is False
+        assert "SECRET" not in capsys.readouterr().out

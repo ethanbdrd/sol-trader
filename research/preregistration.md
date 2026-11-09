@@ -37,7 +37,7 @@ Code de référence : `soltrader/execution.py`.
 | Paramètre | Valeur |
 |---|---|
 | Entrée | prix au moment du verdict, taker |
-| Stop | pivot 4H de R1 (dernier creux sous le prix pour un long, dernier sommet au-dessus pour un short) ± 0,3 % |
+| Stop | pivot 4H de R1 le plus **proche** du prix (creux le plus haut sous le prix pour un long, sommet le plus bas au-dessus pour un short) ± 0,3 % — voir amendement v2.1 |
 | Refus | stop < 1 % ou > 6 % du prix, ou pas de pivot |
 | Objectif | 2R |
 | Sortie forcée | 72 h |
@@ -82,3 +82,15 @@ simulés sur les statuts `possible`, et toute ventilation par signal.
 - Changer un seuil, un poids ou une règle d'exécution en regardant les
   résultats du paper trading sans créer une v3 et repartir de zéro.
 - Relancer le backtest avec des variantes et ne garder que la meilleure.
+
+## Amendement v2.1 — 2026-11-09, avant le premier trade papier
+
+**Changement** : le stop utilise le pivot 4H le plus *proche* du prix au lieu
+du plus *récent*. Ce correctif figurait dans l'audit (« SL suggéré parfois
+incohérent ») **avant** le backtest v2, mais il a été appliqué **après**
+avoir vu ce backtest. Pour ne pas choisir la variante a posteriori :
+
+- les deux backtests sont conservés tels quels (`research/backtest_v2.*`
+  avec l'ancienne règle, `research/backtest_v2.1.*` avec la nouvelle) ;
+- la règle v2.1 est retenue **quel que soit** son résultat ;
+- le paper trading démarre avec v2.1 ; son compteur part de zéro.

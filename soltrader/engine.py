@@ -457,8 +457,10 @@ def _r1_stop_levels(ev, h4, price, row):
     sl_below = [v for v in sl4 if v < price]
     sh_above = [v for v in sh4 if v > price]
     parts, warns = [], []
+    # Pivot le plus PROCHE du prix (et non le plus récent) : c'est le niveau
+    # dont la cassure invalide le trade. Amendement v2.1 (preregistration.md).
     if sl_below:
-        lvl = sl_below[-1]
+        lvl = max(sl_below)
         dist = (price - lvl) / price * 100
         w = _sl_warning(dist, "-")
         warns.append(w)
@@ -470,7 +472,7 @@ def _r1_stop_levels(ev, h4, price, row):
     else:
         parts.append("LONG: pas de pivot bas visible")
     if sh_above:
-        lvl = sh_above[-1]
+        lvl = min(sh_above)
         dist = (lvl - price) / price * 100
         w = _sl_warning(dist, "+")
         warns.append(w)
