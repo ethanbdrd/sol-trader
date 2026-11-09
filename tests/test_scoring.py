@@ -104,3 +104,47 @@ class TestBlockers:
         assert board.effective_status("incomplete", 0.3) == "incomplete"
         board.block("session", "")
         assert board.effective_status("possible", 1.0) == "blocked"
+
+
+class TestStricterGo:
+    """A2 — un go exige un consensus net (règle fixée le 2026-11-09)."""
+
+    def _board(self, win, opp, regime_win=4):
+        board = SignalBoard()
+        if regime_win >= 2:
+            board.add("S1_daily_structure", "short", weight=2)
+        if regime_win >= 4:
+            board.add("S2_ma200", "short", weight=2)
+        for i in range(win - regime_win):
+            board.add(f"c{i}", "short")
+        for i in range(opp):
+            board.add(f"o{i}", "long")
+        _fill_neutral(board, AUTO_ITEMS - len(board.signals))
+        return board
+
+    def test_eight_vs_one_is_go(self):
+        status, direction, *_ = self._board(win=8, opp=1).score()
+        assert status == "go" and direction == "short"
+
+    def test_two_opposite_points_downgrades_to_possible(self):
+        status, direction, *_ = self._board(win=8, opp=2).score()
+        assert status == "possible" and direction == "short"
+
+    def test_regime_only_plus_one_confirmation_is_not_go(self):
+        # 4 pts de tendance daily + BTC (1) + 1 seule confirmation = 6 pts
+        board = SignalBoard()
+        board.add("S1_daily_structure", "long", weight=2)
+        board.add("S2_ma200", "long", weight=2)
+        board.add("M3_btc_bias", "long")
+        board.add("C1_cvd", "long")
+        _fill_neutral(board, AUTO_ITEMS - 4)
+        status, direction, *_ = board.score()
+        assert board.confirmation_points("long") == 1
+        assert status == "possible" and direction == "long"
+
+    def test_btc_is_counted_once(self):
+        from soltrader.engine import evaluate
+        from tests.fixtures import market
+        ev = evaluate(market())
+        sig = {n: (d, w) for n, d, w, _ in ev.board.signals}
+        assert sig["M2_btc_trending"][0] in ("trending", "ranging")

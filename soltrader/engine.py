@@ -209,15 +209,15 @@ def evaluate(md: MarketData) -> Evaluation:
             f"{struct_btc.upper()} / MA200 {'OK ▲' if btc_price > ma200_btc else 'KO ▼'}",
             _dir_color(dir_btc), dir_btc, f"MA200={ma200_btc:,.2f}")
         board.add("M3_btc_bias", dir_btc if dir_btc else "neutral", weight=1)
+        # M2 : simple marqueur tendance / range (non directionnel).
+        # Avant le 2026-11-09, M2 reprenait la direction de M3 → BTC comptait double.
         btc_trending = struct_btc in ("bullish", "bearish")
-        m2_dir = dir_btc if btc_trending else None
-        m2_dir_str = (f" {'▲ LONG' if dir_btc == 'long' else '▼ SHORT'}"
-                      if btc_trending and dir_btc else "")
+        m2_dir_str = (f" {'▲' if dir_btc == 'long' else '▼'}" if dir_btc else "")
         row(S_MACRO, "[M2] BTC en tendance",
             f"TENDANCE CLAIRE{m2_dir_str}" if btc_trending else "EN RANGE — signal non exploitable",
             _dir_color(dir_btc),
             "" if btc_trending else "attends une tendance BTC directionnelle")
-        board.add("M2_btc_trending", m2_dir if m2_dir else "ranging", weight=1)
+        board.add("M2_btc_trending", "trending" if btc_trending else "ranging", weight=1)
     else:
         row(S_MACRO, "[M3] Biais BTC", "ERREUR API", "bad")
 

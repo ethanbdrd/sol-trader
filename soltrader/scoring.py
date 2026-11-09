@@ -1,6 +1,7 @@
 """Moteur de scoring directionnel — SignalBoard."""
 
-from .config import AUTO_ITEMS, MIN_PTS_GO, MIN_PTS_DIRECTION
+from .config import (AUTO_ITEMS, MIN_PTS_GO, MIN_PTS_DIRECTION,
+                     MAX_OPP_PTS_GO, MIN_CONFIRM_GO, REGIME_SIGNALS)
 
 
 class SignalBoard:
@@ -68,12 +69,20 @@ class SignalBoard:
         if direction is None:
             return "mixed", None, long_pts, short_pts, completion
         win_pts = long_pts if direction == "long" else short_pts
+        opp_pts = short_pts if direction == "long" else long_pts
         if win_pts < MIN_PTS_DIRECTION:
             # Direction issue de trop peu de signaux actifs → pas exploitable
             return "mixed", None, long_pts, short_pts, completion
-        if completion >= 0.80 and win_pts >= MIN_PTS_GO:
+        if (completion >= 0.80 and win_pts >= MIN_PTS_GO
+                and opp_pts <= MAX_OPP_PTS_GO
+                and self.confirmation_points(direction) >= MIN_CONFIRM_GO):
             return "go", direction, long_pts, short_pts, completion
         return "possible", direction, long_pts, short_pts, completion
+
+    def confirmation_points(self, direction):
+        """Points dans `direction` venant de signaux hors tendance de fond."""
+        return sum(w for n, d, w, _ in self.signals
+                   if d == direction and n not in REGIME_SIGNALS)
 
     def effective_status(self, status, completion):
         """Statut effectif pour la notif : blocked > directional_blocked > score."""

@@ -36,6 +36,15 @@ MANUAL_ITEMS = 7    # nécessitent vraiment des données personnelles
 MIN_PTS_GO        = 6
 MIN_PTS_DIRECTION = 3
 
+# Règle "go" durcie (2026-11-09, fixée AVANT tout calcul de rendement) :
+# un go exige un consensus net, pas seulement une majorité.
+# - MAX_OPP_PTS_GO : points maximum tolérés dans le sens opposé
+# - MIN_CONFIRM_GO : points minimum venant de signaux HORS tendance de fond
+#   (REGIME_SIGNALS = tendance daily SOL + biais BTC, lents et corrélés entre eux)
+MAX_OPP_PTS_GO = 1
+MIN_CONFIRM_GO = 2
+REGIME_SIGNALS = frozenset({"S1_daily_structure", "S2_ma200", "M3_btc_bias"})
+
 # Pivot detection: N candles each side to qualify as swing high/low
 # 2 sur Daily (délai ~4 jours), 3 sur 4H/15min (délai ~12-45 bougies)
 SWING_N      = 2
