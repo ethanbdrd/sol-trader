@@ -1,4 +1,10 @@
-requests
-pandas
-numpy
-colorama
+certifi==2026.10.23       # via requests
+charset-normalizer==3.5.2  # via requests
+colorama==0.4.6           # via -r requirements.in
+idna==3.20                # via requests
+numpy==2.4.6              # via pandas, -r requirements.in
+pandas==3.1.1             # via -r requirements.in
+python-dateutil==4.0.0    # via pandas
+requests==2.34.2          # via -r requirements.in
+tzdata==2026.6            # via python-dateutil
+urllib3==2.8.0            # via requests

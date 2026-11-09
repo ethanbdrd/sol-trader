@@ -1,0 +1,6 @@
+# Dépendances directes. Après modification, régénérer requirements.txt :
+#   uv pip compile requirements.in --python-version 3.11 -o requirements.txt --no-header --annotation-style line
+requests
+pandas
+numpy
+colorama
