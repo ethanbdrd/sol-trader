@@ -10,6 +10,7 @@ Usage:
     python sol_analyzer.py                   # analyse one-shot, console only
     python sol_analyzer.py --notify          # one-shot + Telegram si signal actionnable
     python sol_analyzer.py --notify --force  # envoie la notif meme si signal inchange
+    python sol_analyzer.py --notify --paper  # + paper trading (production uniquement)
     python sol_analyzer.py --watch 60        # refresh every 60s (local seulement)
 
 Telegram setup:
@@ -28,14 +29,8 @@ State & log :
     signal_log.jsonl       : une ligne JSON par analyse (historique des verdicts)
     Les deux sont commites dans le repo par le workflow.
 
-Architecture : le code vit dans le package soltrader/
-    config.py   constantes et seuils
-    api.py      appels Gate.io + Forex Factory
-    signals.py  fonctions de calcul (pures, testees par pytest)
-    scoring.py  SignalBoard (points, bloqueurs, verdict)
-    analysis.py orchestration + affichage console
-    notify.py   Telegram + state anti-spam
-    logger.py   log JSONL des analyses
+Architecture : voir CLAUDE.md (moteur unique soltrader/engine.py,
+paper trading soltrader/paper.py, règles figées research/preregistration.md).
 """
 
 import argparse
