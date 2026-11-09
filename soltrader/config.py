@@ -21,6 +21,10 @@ LOG_FILE = "signal_log.jsonl"
 # Cache du calendrier Forex Factory (évite le rate limit HTTP 429)
 MACRO_CACHE = ".macro_calendar.json"
 
+# Paper trading : positions ouvertes + historique des trades clôturés
+PAPER_STATE = ".paper_state.json"
+PAPER_LOG   = "paper_trades.jsonl"
+
 # Statuts qui declenchent une notification Telegram
 NOTIFY_ON_STATUSES = {"go", "blocked", "directional_blocked", "possible"}
 

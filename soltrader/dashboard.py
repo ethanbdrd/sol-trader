@@ -9,6 +9,53 @@ import os
 from datetime import datetime, timezone
 
 from .logger import read_log
+from . import paper
+
+DECISION_N = 30   # évaluation pré-enregistrée (research/preregistration.md)
+
+
+def _num(v, fmt="{:+.2f}"):
+    return fmt.format(v) if isinstance(v, (int, float)) else "—"
+
+
+def _paper_section():
+    stats = paper.stats_by_book()
+    state = paper.load_state()
+    cards = []
+    for book, title in (("go", "Carnet GO — test H1"), ("possible", "Carnet POSSIBLE — exploratoire")):
+        st = stats.get(book, {"n": 0})
+        n = st.get("n", 0)
+        pos = state.get(book)
+        pos_html = (f"{'▲' if pos.direction == 'long' else '▼'} {pos.direction.upper()} "
+                    f"depuis {html.escape(pos.entry_time[:16].replace('T', ' '))} · "
+                    f"entrée {pos.entry:.3f} · stop {pos.stop:.3f} · objectif {pos.target:.3f}"
+                    if pos else "aucune position ouverte")
+        progress = f" · {n}/{DECISION_N} trades avant évaluation" if book == "go" else ""
+        cards.append(
+            f'<div class="pcard"><div class="ptitle">{title}</div>'
+            f'<div class="pline">{n} trades clôturés{progress}</div>'
+            f'<div class="pline">R net moyen {_num(st.get("avg_r"))} · win '
+            f'{_num(st.get("win_rate", None) * 100 if n else None, "{:.0f}%")} · PF '
+            f'{_num(st.get("profit_factor"), "{:.2f}")} · total {_num(st.get("sum_r"), "{:+.1f} R")} · '
+            f'DD max {_num(st.get("max_drawdown_r"), "{:.1f} R")}</div>'
+            f'<div class="pline dim">{pos_html}</div></div>')
+    rows = []
+    for t in reversed(paper.read_trades()[-30:]):
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(t.get('book', '?'))}</td>"
+            f"<td class='ts'>{html.escape(str(t.get('entry_time', ''))[:16].replace('T', ' '))}</td>"
+            f"<td>{_dir_cell(t.get('direction'))}</td>"
+            f"<td>{t.get('entry', 0):.3f} → {t.get('exit_price', 0):.3f}</td>"
+            f"<td>{html.escape(str(t.get('exit_reason', '')))}</td>"
+            f"<td>{_num(t.get('net_pct'), '{:+.2f}%')}</td>"
+            f"<td>{_num(t.get('r_net'), '{:+.2f} R')}</td>"
+            "</tr>")
+    table = (f"<div class='tablewrap'><table><thead><tr><th>Carnet</th><th>Entrée</th><th>Dir.</th>"
+             f"<th>Prix</th><th>Sortie</th><th>Net</th><th>R</th></tr></thead>"
+             f"<tbody>{''.join(rows)}</tbody></table></div>") if rows else ""
+    return (f"<h2>🧪 Paper trading</h2><div class='sub'>Trades fictifs, frais et funding inclus — "
+            f"règles : research/preregistration.md</div><div class='cards'>{''.join(cards)}</div>{table}")
 
 OUT_DIR  = "docs"
 OUT_FILE = os.path.join(OUT_DIR, "index.html")
@@ -99,6 +146,11 @@ def generate(limit=200):
   .ts {{ color: #94a3b8; }}
   .blockers {{ color: #94a3b8; font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }}
   .empty {{ color: #64748b; padding: 40px; text-align: center; }}
+  h2 {{ font-size: 16px; margin: 28px 0 4px; }}
+  .pcard {{ background: #111a2e; border: 1px solid #1e293b; border-radius: 8px; padding: 12px 16px; min-width: 300px; flex: 1; }}
+  .ptitle {{ font-weight: bold; margin-bottom: 6px; }}
+  .pline {{ font-size: 12px; }}
+  .dim {{ color: #64748b; }}
 </style>
 </head>
 <body>
@@ -111,6 +163,7 @@ def generate(limit=200):
 <tbody>{''.join(rows_html) or '<tr><td colspan="8" class="empty">Aucune analyse loggée pour le moment.</td></tr>'}</tbody>
 </table>
 </div>
+{_paper_section()}
 </body>
 </html>
 """

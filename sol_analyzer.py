@@ -47,6 +47,9 @@ from soltrader.analysis import run_analysis
 from soltrader.notify import (send_telegram, build_telegram_message,
                               load_state, save_state, signal_changed)
 from soltrader.logger import build_record, append_log
+from soltrader import paper
+from soltrader.api import fetch_ohlcv
+from soltrader.engine import closed_only
 
 
 def main():
@@ -59,6 +62,8 @@ def main():
                         help="Force l'envoi Telegram meme si le signal n'a pas change")
     parser.add_argument("--no-log",  action="store_true",
                         help="Ne pas ecrire l'analyse dans signal_log.jsonl")
+    parser.add_argument("--paper",   action="store_true",
+                        help="Met a jour le paper trading (positions fictives, cf. research/)")
     parser.add_argument("--watch",   type=int, default=0,
                         help="Refresh interval en secondes (0 = run once, local seulement)")
     args = parser.parse_args()
@@ -113,10 +118,31 @@ def main():
                 print(DIM + f"\n  [NOTIFY] Signal inchange ({effective_status}/{direction}) — pas de notif." + RST)
                 print(DIM + "           Utilise --force pour forcer l'envoi." + RST)
 
+    if args.paper:
+        run_paper(args, md, ev, effective_status, direction)
+
     if not args.no_log:
         append_log(build_record(now_str, price, status, effective_status,
                                 direction, long_pts, short_pts, completion,
                                 board, notified=sent))
+
+
+def run_paper(args, md, ev, status, direction):
+    """Paper trading : avance les positions fictives, en ouvre sur go/possible."""
+    # 300 bougies 15 min = 75 h ≥ détention max (72 h)
+    m15 = closed_only(fetch_ohlcv(args.symbol, "15m", limit=301), "15min", md.now)
+    if m15 is None:
+        print(DIM + "\n  [PAPER] Bougies 15 min indisponibles — mise à jour reportée." + RST)
+        return
+    events = paper.update(md, ev, status, direction, m15, md.funding)
+    for kind, book, payload in events:
+        msg = paper.format_event(kind, book, payload)
+        if msg is None:
+            print(DIM + f"\n  [PAPER {book}] signal non tradé : {payload}" + RST)
+            continue
+        print(C + "\n  " + msg.replace("\n", "\n  ") + RST)
+        if args.notify:
+            send_telegram(msg)
 
 
 if __name__ == "__main__":
