@@ -56,3 +56,15 @@ SWING_N_FAST = 3   # pour 4H et 15min
 # Seuil minimum de liquidations (contracts) pour déclencher le bloqueur F4
 # (~40 000$ à 80$/SOL) — évite les faux positifs sur des liqs négligeables
 LIQ_MIN_THRESHOLD = 500
+
+# ─────────────────────────────────────────────
+# Exécution simulée (backtest + paper trading) — pré-enregistré le 2026-11-09
+# ─────────────────────────────────────────────
+LEVERAGE     = 10
+FEE_TAKER    = 0.00075   # 0,075 % par côté (taker Gate.io SOL_USDT, vérifié via /contracts)
+SLIPPAGE     = 0.0002    # 0,02 % par côté (hypothèse prudente, SOL perp très liquide)
+SL_BUFFER    = 0.003     # stop placé 0,3 % au-delà du pivot (consigne R1)
+RR_TARGET    = 2.0       # objectif à 2R (R:R minimum 1:2 de la checklist)
+MIN_STOP_PCT = 1.0       # stop plus serré = bruit (cf. bloqueur sl_trop_serre)
+MAX_STOP_PCT = 6.0       # au-delà, trop proche de la liquidation x10 (~ -9,5 %)
+MAX_HOLD_H   = 72        # sortie forcée après 72 h
