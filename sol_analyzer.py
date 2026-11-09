@@ -40,13 +40,14 @@ Architecture : le code vit dans le package soltrader/
 
 import argparse
 import time
+from datetime import datetime, timedelta, timezone
 
 from soltrader.config import SYMBOL, NOTIFY_ON_STATUSES
 from soltrader.display import C, DIM, RST
 from soltrader.analysis import run_analysis
 from soltrader.notify import (send_telegram, build_telegram_message,
                               load_state, save_state, signal_changed)
-from soltrader.logger import build_record, append_log
+from soltrader.logger import build_record, append_log, read_log
 from soltrader import paper
 from soltrader.api import fetch_ohlcv
 from soltrader.engine import closed_only
@@ -64,6 +65,9 @@ def main():
                         help="Ne pas ecrire l'analyse dans signal_log.jsonl")
     parser.add_argument("--paper",   action="store_true",
                         help="Met a jour le paper trading (positions fictives, cf. research/)")
+    parser.add_argument("--min-interval", type=int, default=0,
+                        help="Ignore le run si la derniere analyse loggee a moins de N minutes "
+                             "(dedoublonne les crons redondants)")
     parser.add_argument("--watch",   type=int, default=0,
                         help="Refresh interval en secondes (0 = run once, local seulement)")
     args = parser.parse_args()
@@ -82,6 +86,10 @@ def main():
         return
 
     # Run unique (mode cron / GitHub Actions)
+    if args.min_interval and recent_analysis(args.min_interval):
+        print(DIM + f"  Derniere analyse il y a moins de {args.min_interval} min — run ignore." + RST)
+        return
+
     status, direction, board, ev, md = run_analysis(symbol=args.symbol, verbose=args.verbose)
     price = md.price or 0.0
     now_str = md.now.strftime("%Y-%m-%d %H:%M UTC")
@@ -125,6 +133,19 @@ def main():
         append_log(build_record(now_str, price, status, effective_status,
                                 direction, long_pts, short_pts, completion,
                                 board, notified=sent))
+
+
+def recent_analysis(minutes, now=None):
+    """True si signal_log.jsonl contient une analyse de moins de `minutes` minutes."""
+    last = read_log(limit=1)
+    if not last:
+        return False
+    try:
+        ts = datetime.strptime(last[-1]["ts"], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError):
+        return False
+    now = now or datetime.now(timezone.utc)
+    return timedelta(0) <= now - ts < timedelta(minutes=minutes)
 
 
 def run_paper(args, md, ev, status, direction):

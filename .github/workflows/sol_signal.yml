@@ -4,22 +4,29 @@ on:
   schedule:
     # Toutes les heures de 07h à 21h UTC (sessions Londres / inter / US).
     # Pas de runs 22h-06h : session asiatique = bloqueur systématique.
-    # Minute 17 : la minute 0 est surchargée chez GitHub (retards de 1-3h observés).
+    # GitHub saute ou retarde souvent les crons (≈4 runs/jour observés au lieu
+    # de 15) : deux déclenchements par heure (:17 et :47), le second est ignoré
+    # si une analyse a déjà été faite il y a moins de 40 min (--min-interval).
     - cron: "17 7-21 * * *"
+    - cron: "47 7-21 * * *"
 
   workflow_dispatch:
     inputs:
       force:
         description: "Forcer l'envoi Telegram meme si signal inchange"
         required: false
-        default: "false"
+        default: false
         type: boolean
+
+# Un seul run à la fois : évite deux pushes concurrents et les notifs en double
+concurrency:
+  group: sol-signal
+  cancel-in-progress: false
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # Permission d'écrire dans le repo pour persister le state + log + dashboard
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -27,13 +34,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # Récupère le dernier commit incluant le state file
           fetch-depth: 1
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -43,12 +50,13 @@ jobs:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONUNBUFFERED: "1"
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
-            python sol_analyzer.py --notify --paper --force
-          else
-            python sol_analyzer.py --notify --paper
-          fi
+          ARGS="--notify --paper"
+          if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "$EVENT" = "schedule" ]; then ARGS="$ARGS --min-interval 40"; fi
+          python sol_analyzer.py $ARGS
 
       - name: Archive market data
         if: always()
@@ -58,14 +66,26 @@ jobs:
         if: always()
         run: python -m soltrader.dashboard
 
-      # Commit state + log + dashboard dans le repo — persistant entre tous les runs
+      # Persiste state + logs + dashboard + archive. Échoue (visible dans
+      # l'onglet Actions) si le push est impossible après 3 tentatives.
       - name: Persist signal state
         if: always()
         run: |
           git config user.name  "sol-bot"
           git config user.email "sol-bot@github-actions"
-          git add -f .sol_signal_state.json .macro_calendar.json .paper_state.json paper_trades.jsonl signal_log.jsonl docs/ data/ 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "chore: update signal state [skip ci]"
-          # pull --rebase au cas où un autre run a poussé entre-temps
-          git pull --rebase --autostash origin main 2>/dev/null || true
-          git push 2>/dev/null || true
+          for f in .sol_signal_state.json .macro_calendar.json .paper_state.json \
+                   paper_trades.jsonl signal_log.jsonl docs data; do
+            if [ -e "$f" ]; then git add -f "$f"; fi
+          done
+          if git diff --staged --quiet; then
+            echo "Rien à committer."
+            exit 0
+          fi
+          git commit -m "chore: update signal state [skip ci]"
+          for attempt in 1 2 3; do
+            git pull --rebase origin main && git push && exit 0
+            echo "Push échoué (tentative $attempt), nouvel essai…"
+            sleep $((attempt * 5))
+          done
+          echo "::error::Impossible de pousser le state après 3 tentatives"
+          exit 1
