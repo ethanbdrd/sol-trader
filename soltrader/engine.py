@@ -184,8 +184,11 @@ def evaluate(md: MarketData) -> Evaluation:
     if md.replay:
         pass  # non rejouable en backtest → item non répondu
     elif md.macro is None:
+        # Fail-safe : sans calendrier on ne peut pas exclure un CPI/FOMC imminent
         row(S_MACRO, "[M1] Calendrier macro", "API indisponible — verifier manuellement", "warn",
             "→ fr.investing.com/economic-calendar")
+        board.block("macro_inconnu",
+                    "Calendrier macro indisponible — verifier manuellement avant de trader")
     elif len(md.macro) == 0:
         row(S_MACRO, "[M1] Calendrier macro", "Aucun event HIGH dans les 4h", "good")
         board.add("M1_macro", "ok_no_event", weight=1)
@@ -259,7 +262,9 @@ def evaluate(md: MarketData) -> Evaluation:
         row(S_DERIV, "[F2] Open Interest", "ERREUR API", "bad")
 
     # F4 — liquidations 8h (sommes horaires contract_stats, en contrats = SOL)
-    if has_stats and {"long_liq_size", "short_liq_size"} <= set(st.columns):
+    liq_cols = ["long_liq_size", "short_liq_size"]
+    if (has_stats and set(liq_cols) <= set(st.columns)
+            and st[liq_cols].tail(8).notna().any().any()):
         liq8 = st.tail(8)
         long_liqs = float(liq8["long_liq_size"].fillna(0).sum())
         short_liqs = float(liq8["short_liq_size"].fillna(0).sum())
@@ -354,7 +359,11 @@ def evaluate(md: MarketData) -> Evaluation:
     # ── 6. ENTRÉE ────────────────────────────
     # C3 — absorption 15min
     absorbed, vol_ratio, body_pct = detect_absorption(m15)
-    if absorbed:
+    if m15 is None or len(m15) < 10:
+        # Fail-safe : pas de données ≠ "pas d'absorption"
+        row(S_ENTRY, "[C3] Absorption 15min", "DONNÉES INSUFFISANTES", "warn")
+        board.add("C3_absorption", None, weight=1)
+    elif absorbed:
         row(S_ENTRY, "[C3] Absorption 15min",
             f"ABSORPTION DETECTEE (vol x{vol_ratio:.1f} avg, body {body_pct:.2f}%)", "bad",
             "volume fort sans mouvement = vendeurs/acheteurs cachés")

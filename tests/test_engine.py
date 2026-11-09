@@ -83,3 +83,31 @@ class TestClosedCandles:
                         (md.sol_15m, "15min"), (md.stats_1h, "1h")):
             assert (df.index + pd.Timedelta(itv) <= NOW).all()
         assert len(md.sol_15m) == 100 and len(md.stats_1h) == 336
+
+
+class TestFailSafe:
+    """A3 — une panne d'API n'est jamais interprétée comme un feu vert."""
+
+    def test_macro_unavailable_blocks_live(self):
+        ev = evaluate(market(macro=None, replay=False))
+        assert "macro_inconnu" in [n for n, _ in ev.board.global_blockers()]
+        assert "M1_macro" not in _signals(ev)
+
+    def test_macro_unavailable_in_replay_does_not_block(self):
+        ev = evaluate(market(macro=None, replay=True))
+        assert "macro_inconnu" not in [n for n, _, _ in ev.board.blockers]
+
+    def test_missing_15m_leaves_absorption_unanswered(self):
+        ev = evaluate(market(sol_15m=None, price=100.0))
+        assert _signals(ev)["C3_absorption"] is None
+
+    def test_nan_liquidations_are_unanswered_not_safe(self):
+        st = stats()
+        st[["long_liq_size", "short_liq_size"]] = float("nan")
+        ev = evaluate(market(stats_1h=st))
+        assert "F4_liquidations" not in _signals(ev)
+
+    def test_api_outage_cannot_produce_go(self):
+        ev = evaluate(market(stats_1h=None, funding=None, macro=None, sol_15m=None, price=100.0))
+        status, *_ , completion = ev.board.score()
+        assert ev.board.effective_status(status, completion) != "go"
