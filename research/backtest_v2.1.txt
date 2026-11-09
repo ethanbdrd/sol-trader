@@ -1,0 +1,25 @@
+  Rejeu 2026-07-29 23:15 → 2026-11-09 22:00 UTC, pas 1 h…
+
+  ── VERDICTS (2471) ────────────────────────────────────────
+  blocked                 1293 (52%)
+  directional_blocked      406 (16%)
+  mixed                    398 (16%)
+  possible                 297 (12%)
+  go                        77 (3%)
+
+  ── TRADES SUR `go` (règle pré-enregistrée H1) ────────────────
+    trades 17 (13 long / 4 short)  |  win 24%  |  R net moyen -0.29  (médiane -1.04)  |  total -4.9 R
+    profit factor 0.56  |  drawdown max 5.5 R  |  net moyen -0.89% du notionnel  |  coûts moyens 0.20%
+    durée moyenne 32 h  |  sorties {'stop': 9, 'time': 5, 'target': 3}
+
+  ── TRADES SUR `possible` (exploratoire) ──────────────────────
+    trades 41 (28 long / 13 short)  |  win 49%  |  R net moyen +0.21  (médiane -0.01)  |  total +8.4 R
+    profit factor 1.41  |  drawdown max 6.5 R  |  net moyen +0.26% du notionnel  |  coûts moyens 0.19%
+    durée moyenne 34 h  |  sorties {'stop': 18, 'target': 13, 'time': 10}
+
+  Signaux non tradés (stop invalide) : {'SL trop large': 23}
+
+  Rappel : backtest EXPLORATOIRE (voir research/preregistration.md) ;
+  M1 macro non rejouable → plus de trades qu'en live.
+
+  Détail écrit dans research/backtest_v2.1.json
