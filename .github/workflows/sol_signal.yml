@@ -50,6 +50,10 @@ jobs:
             python sol_analyzer.py --notify
           fi
 
+      - name: Archive market data
+        if: always()
+        run: python -m soltrader.archive
+
       - name: Generate dashboard
         if: always()
         run: python -m soltrader.dashboard
@@ -60,7 +64,7 @@ jobs:
         run: |
           git config user.name  "sol-bot"
           git config user.email "sol-bot@github-actions"
-          git add -f .sol_signal_state.json .macro_calendar.json signal_log.jsonl docs/ 2>/dev/null || true
+          git add -f .sol_signal_state.json .macro_calendar.json signal_log.jsonl docs/ data/ 2>/dev/null || true
           git diff --staged --quiet || git commit -m "chore: update signal state [skip ci]"
           # pull --rebase au cas où un autre run a poussé entre-temps
           git pull --rebase --autostash origin main 2>/dev/null || true
