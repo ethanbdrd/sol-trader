@@ -94,3 +94,21 @@ avoir vu ce backtest. Pour ne pas choisir la variante a posteriori :
   avec l'ancienne règle, `research/backtest_v2.1.*` avec la nouvelle) ;
 - la règle v2.1 est retenue **quel que soit** son résultat ;
 - le paper trading démarre avec v2.1 ; son compteur part de zéro.
+
+## Erratum données — 2026-11-09
+
+Le backfill initial de `data/stats_1h.csv` contenait **1 703 heures en double**
+(18/08 → 28/10 : pages Gate.io qui se chevauchent, non dédoublonnées quand
+l'archive était vide). Les fichiers `backtest_v2.*` et `backtest_v2.1.*` ont
+été calculés sur ces données faussées et sont **invalides** (conservés pour
+traçabilité). Bug corrigé (`archive.merge_series`), archive dédoublonnée,
+les deux règles relancées une fois sur données propres, sans autre changement :
+
+| Fichier | Règle de stop | `go` (H1) | `possible` (exploratoire) |
+|---|---|---|---|
+| `backtest_v2_corrige.*` | pivot le plus récent | 13 trades, win 31 %, −0,25 R, PF 0,58 | 36 trades, win 53 %, +0,12 R, PF 1,27 |
+| `backtest_v2.1_corrige.*` | pivot le plus proche (retenue) | 15 trades, win 20 %, −0,49 R, PF 0,36 | 39 trades, win 46 %, +0,06 R, PF 1,11 |
+
+Lecture : sur ces ~3 mois, rien n'indique que les `go` aient un avantage.
+L'échantillon reste trop petit pour conclure ; la décision revient au
+paper trading, selon les critères ci-dessus.

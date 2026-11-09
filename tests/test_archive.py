@@ -42,3 +42,12 @@ def test_funding_from_stats_takes_settlement_hours():
     out = ar.funding_from_stats(st)
     # période [07:00, 08:00[ → versement de 08:00
     assert out == [{"fundingRate": "3", "fundingTime": int(pd.Timestamp("2026-11-09 08:00", tz="UTC").timestamp())}]
+
+
+def test_merge_dedupes_within_first_batch():
+    """Régression : le premier backfill (archive vide) gardait les doublons
+    des pages qui se chevauchent (1 703 heures doublées dans stats_1h)."""
+    page = stats(n=10)
+    batch = pd.concat([page, page.tail(4)])
+    out = ar.merge_series(None, batch)
+    assert len(out) == 10 and not out.index.duplicated().any()

@@ -56,15 +56,13 @@ def read_series(name, data_dir=DATA_DIR):
 
 
 def merge_series(old, new):
-    """Fusionne sans doublon ; en cas de conflit, la donnée la plus récente gagne."""
-    if old is None or old.empty:
-        out = new
-    elif new is None or new.empty:
-        out = old
-    else:
-        out = pd.concat([old, new])
-        out = out[~out.index.duplicated(keep="last")]
-    return out.sort_index()
+    """Fusionne et dédoublonne (y compris à l'intérieur d'un même lot : les
+    pages de backfill Gate.io se chevauchent). La donnée la plus récente gagne."""
+    frames = [f for f in (old, new) if f is not None and not f.empty]
+    if not frames:
+        return old if old is not None else new
+    out = pd.concat(frames)
+    return out[~out.index.duplicated(keep="last")].sort_index()
 
 
 def _write(name, df, data_dir):
