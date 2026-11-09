@@ -22,7 +22,7 @@ from datetime import timedelta
 
 from soltrader.config import SYMBOL, BTC_SYMBOL
 from soltrader.api import fetch_ohlcv, fetch_contract_stats, fetch_funding_rate
-from soltrader.engine import MarketData, evaluate
+from soltrader.engine import MarketData, evaluate, closed_only
 
 
 def load_data():
@@ -42,17 +42,15 @@ def load_data():
     return data
 
 
-def closed_before(df, t, interval):
-    """Bougies entièrement clôturées avant t (pas de lookahead)."""
-    return df[df.index <= t - pd.Timedelta(interval)]
+closed_before = closed_only   # même définition que le live (pas de lookahead)
 
 
 def market_at(t, data):
     """Reconstruit l'instantané MarketData vu à l'instant t, ou None si trop peu de données."""
-    d1  = closed_before(data["sol_1d"], t, "1d")
+    d1  = closed_before(data["sol_1d"], t, "1D")
     h4  = closed_before(data["sol_4h"], t, "4h")
     m15 = closed_before(data["sol_15m"], t, "15min")
-    b1d = closed_before(data["btc_1d"], t, "1d")
+    b1d = closed_before(data["btc_1d"], t, "1D")
     st  = closed_before(data["stats_1h"], t, "1h")
     if len(m15) < 100 or len(h4) < 30 or len(d1) < 210 or len(st) < 48:
         return None

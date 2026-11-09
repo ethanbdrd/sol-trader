@@ -19,6 +19,20 @@ from .signals import (calc_mas, assess_structure, detect_bos_choch,
                       assess_oi, assess_ls_ratio, assess_taker_flow)
 
 
+def closed_only(df, interval, now):
+    """Garde uniquement les périodes entièrement terminées à l'instant `now`.
+
+    Gate.io renvoie la bougie (ou la période contract_stats) EN COURS en
+    dernière position : au cron de :17, la bougie 15 min n'a que ~2 minutes
+    et la ligne contract_stats de l'heure est quasi vide. Les index sont
+    des débuts de période ; une période [t, t+interval[ est close si
+    t + interval <= now.
+    """
+    if df is None:
+        return None
+    return df[df.index + pd.Timedelta(interval) <= pd.Timestamp(now)]
+
+
 @dataclass
 class MarketData:
     """Instantané des données de marché à l'instant `now`.
