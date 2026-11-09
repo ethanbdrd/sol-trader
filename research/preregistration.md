@@ -1,0 +1,84 @@
+# Pré-enregistrement — sol-trader, règles v2
+
+Rédigé le **2026-11-09**, avant tout calcul de rendement avec les règles v2.
+Le commit qui introduit ce fichier fait foi : toute modification ultérieure
+des règles ci-dessous exige une **nouvelle version** de ce document (v3…),
+et remet le compteur de paper trading à zéro.
+
+## Ce qu'on teste
+
+**H1 — Les « go » ont une espérance nette positive.** Les verdicts `go`
+effectifs (statut après bloqueurs) du moteur v2, exécutés mécaniquement avec
+les règles d'exécution ci-dessous, ont un résultat net moyen > 0 R par trade,
+après frais, glissement et funding.
+
+Le bot sert de filtre à des trades discrétionnaires. H1 ne mesure donc pas
+ton résultat réel, mais la valeur du signal brut. C'est la question
+préalable : si le signal mécanique perd, le filtre n'apporte rien de mesurable.
+
+## Règles du signal (v2)
+
+Code de référence : `soltrader/engine.py`, `soltrader/scoring.py`,
+`soltrader/config.py` au commit de ce fichier.
+
+- 20 items automatiques, poids 2 pour S1 et S2, 1 pour les autres.
+  M2 n'est plus directionnel (BTC compté une fois via M3).
+- Direction : ratio de points ≥ 0,65 (long) ou ≤ 0,35 (short).
+- `go` : complétion ≥ 80 %, ≥ 6 pts dans le sens, ≤ 1 pt dans le sens
+  opposé, ≥ 2 pts de confirmation hors S1/S2/M3.
+- Statut effectif : bloqueur global → `blocked` ; bloqueur visant le sens
+  proposé → `directional_blocked` ; sinon le statut du score.
+- Uniquement des périodes clôturées ; panne de données = item non répondu.
+
+## Règles d'exécution
+
+Code de référence : `soltrader/execution.py`.
+
+| Paramètre | Valeur |
+|---|---|
+| Entrée | prix au moment du verdict, taker |
+| Stop | pivot 4H de R1 (dernier creux sous le prix pour un long, dernier sommet au-dessus pour un short) ± 0,3 % |
+| Refus | stop < 1 % ou > 6 % du prix, ou pas de pivot |
+| Objectif | 2R |
+| Sortie forcée | 72 h |
+| Stop et objectif dans la même bougie 15 min | stop |
+| Frais | 0,075 % par côté (taker Gate.io) |
+| Glissement | 0,02 % par côté |
+| Funding | taux réellement versés aux échéances 00/08/16 UTC |
+| Positions | une seule à la fois ; un `go` pendant une position ouverte est ignoré |
+| Levier | x10 (sans effet sur le résultat en R ; liquidation ~ −9,5 %, jamais atteinte avec un stop ≤ 6 %) |
+
+## Deux jeux de données, deux statuts
+
+1. **Backtest rétrospectif** (`backtest.py`, archive `data/`, ~2026-07-29 →
+   2026-11-09, un verdict par heure à HH:15). **Exploratoire**, pour deux
+   raisons : la règle `go` v2 s'inspire de l'expérience accumulée en tradant
+   pendant cette période, et le calendrier macro n'est pas rejouable (M1
+   absent, donc plus de trades qu'en live). Il sert à vérifier que le
+   système fonctionne et à mesurer les coûts, pas à conclure.
+2. **Paper trading en avant** (à partir du déploiement de ce commit), même
+   moteur, mêmes règles, données jamais vues. **Confirmatoire.**
+
+## Critères de décision (paper trading)
+
+Métrique principale : **R net moyen par trade**. Secondaires : win rate,
+profit factor, drawdown max en R, coût moyen par trade.
+
+Évaluation à **30 trades clôturés** :
+
+- R net moyen ≥ +0,15 **et** profit factor ≥ 1,2 → feu vert pour suivre les
+  `go` en réel, risque limité à 0,5 % du capital par trade (taille de
+  position = 0,5 % du capital ÷ distance au stop).
+- R net moyen ≤ 0 → H1 rejetée : les `go` v2 n'ont pas d'avantage. Toute
+  nouvelle règle passe par un nouveau pré-enregistrement.
+- Entre les deux → on continue jusqu'à 60 trades, puis on applique les mêmes
+  seuils.
+
+Hors critères (exploratoire, rapporté mais sans décision) : les trades
+simulés sur les statuts `possible`, et toute ventilation par signal.
+
+## Ce qui est interdit
+
+- Changer un seuil, un poids ou une règle d'exécution en regardant les
+  résultats du paper trading sans créer une v3 et repartir de zéro.
+- Relancer le backtest avec des variantes et ne garder que la meilleure.
