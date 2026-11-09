@@ -8,11 +8,13 @@ Pièges Gate.io :
 - tailles de trades en CONTRATS, pas en SOL
 """
 
+import json
 import requests
 import pandas as pd
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
-from .config import GATE_BASE, TIMEOUT
+from .config import GATE_BASE, TIMEOUT, MACRO_CACHE
 from .display import R, Y, RST
 
 
@@ -112,38 +114,79 @@ def fetch_current_price(symbol):
     return None
 
 
-def fetch_macro_calendar():
-    """
-    Forex Factory public JSON — unofficial but stable.
-    Returns high-impact events in the next 4h.
-    """
-    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+MACRO_CACHE_MAX_AGE = timedelta(hours=6)
+MACRO_WINDOW = timedelta(hours=4)
+ET = ZoneInfo("America/New_York")
+
+
+def _event_time_utc(ev):
+    """Heure UTC d'un event Forex Factory, ou None si illisible."""
     try:
-        r = requests.get(url, timeout=TIMEOUT,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        events = r.json()
-    except Exception as e:
-        print(Y + f"  [MACRO] Calendrier indisponible: {e}" + RST)
+        # Format actuel : ISO 8601 avec offset ("2026-07-12T08:30:00-04:00")
+        return datetime.fromisoformat(ev["date"]).astimezone(timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        # Ancien format : "01-06-2026" + "8:30am", heure de New York (EST/EDT)
+        dt_et = datetime.strptime(f"{ev['date']} {ev['time']}", "%m-%d-%Y %I:%M%p")
+        return dt_et.replace(tzinfo=ET).astimezone(timezone.utc)
+    except Exception:
         return None
 
-    now_utc  = datetime.now(timezone.utc)
-    window   = now_utc + timedelta(hours=4)
-    upcoming = []
+
+def _load_macro_cache(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        return datetime.fromisoformat(cache["fetched"]), cache["events"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+
+
+def _covers(events, until):
+    """True si le calendrier contient des events jusqu'à `until` au moins."""
+    times = [t for t in (_event_time_utc(e) for e in events) if t]
+    return bool(times) and max(times) >= until
+
+
+def upcoming_high_impact(events, now, window=MACRO_WINDOW):
+    out = []
     for ev in events:
         if ev.get("impact") != "High":
             continue
-        try:
-            # Format actuel FF : date ISO 8601 avec offset ("2026-07-12T08:30:00-04:00")
-            dt_utc = datetime.fromisoformat(ev["date"]).astimezone(timezone.utc)
-        except (KeyError, TypeError, ValueError):
-            try:
-                # Ancien format : "01-06-2026" + "8:30am" en ET (approx UTC-5)
-                dt_str = f"{ev['date']} {ev['time']}"
-                dt_et  = datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
-                dt_utc = dt_et.replace(tzinfo=timezone.utc) + timedelta(hours=5)
-            except Exception:
-                continue
-        if now_utc <= dt_utc <= window:
-            upcoming.append({"title": ev.get("title", "?"), "time_utc": dt_utc})
-    return upcoming
+        t = _event_time_utc(ev)
+        if t and now <= t <= now + window:
+            out.append({"title": ev.get("title", "?"), "time_utc": t})
+    return out
+
+
+def fetch_macro_calendar(now=None, cache_path=MACRO_CACHE):
+    """
+    Events macro HIGH dans les 4h (Forex Factory, JSON public non officiel).
+    Le fichier couvre toute la semaine : il est mis en cache (6h) pour ne pas
+    déclencher le rate limit (HTTP 429). En cas d'erreur, le cache est utilisé
+    s'il couvre encore la fenêtre des 4h. Retourne None si rien d'exploitable.
+    """
+    now = now or datetime.now(timezone.utc)
+    fetched, events = _load_macro_cache(cache_path)
+    if events is not None and now - fetched < MACRO_CACHE_MAX_AGE and _covers(events, now):
+        return upcoming_high_impact(events, now)
+    try:
+        r = requests.get(FF_URL, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        fresh = r.json()
+        if not isinstance(fresh, list):
+            raise ValueError("format inattendu")
+    except Exception as e:
+        print(Y + f"  [MACRO] Calendrier indisponible: {e}" + RST)
+        if events is not None and _covers(events, now + MACRO_WINDOW):
+            print(Y + f"  [MACRO] Cache du {fetched:%Y-%m-%d %H:%M} UTC utilisé" + RST)
+            return upcoming_high_impact(events, now)
+        return None
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"fetched": now.isoformat(), "events": fresh}, f)
+    except OSError:
+        pass
+    return upcoming_high_impact(fresh, now)

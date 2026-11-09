@@ -18,6 +18,9 @@ STATE_FILE = ".sol_signal_state.json"
 # Log JSONL de chaque analyse (commité par le workflow pour analyse a posteriori)
 LOG_FILE = "signal_log.jsonl"
 
+# Cache du calendrier Forex Factory (évite le rate limit HTTP 429)
+MACRO_CACHE = ".macro_calendar.json"
+
 # Statuts qui declenchent une notification Telegram
 NOTIFY_ON_STATUSES = {"go", "blocked", "directional_blocked", "possible"}
 
