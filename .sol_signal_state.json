@@ -1,7 +1,9 @@
 {
-  "status": "possible",
+  "status": "go",
   "direction": "short",
-  "price": 83.84,
-  "timestamp": "2026-11-11 15:07 UTC",
-  "blockers": []
+  "price": 84.56,
+  "timestamp": "2026-11-11 21:54 UTC",
+  "blockers": [
+    "recent_liquidation"
+  ]
 }
