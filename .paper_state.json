@@ -1,25 +1,4 @@
 {
  "go": null,
- "possible": {
-  "direction": "short",
-  "entry_time": "2026-11-23T19:12:11.141867+00:00",
-  "entry": 73.29,
-  "stop": 75.83682999999999,
-  "target": 68.19634000000003,
-  "risk_pct": 3.4750034111065435,
-  "status": "open",
-  "exit_time": null,
-  "exit_price": null,
-  "exit_reason": null,
-  "gross_pct": null,
-  "costs_pct": null,
-  "funding_pct": null,
-  "net_pct": null,
-  "r_net": null,
-  "margin_pct": null,
-  "meta": {
-   "long_pts": 2,
-   "short_pts": 7
-  }
- }
+ "possible": null
 }
